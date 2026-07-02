@@ -1,0 +1,3 @@
+@echo off
+cd /d "%~dp0.."
+if exist "本地游戏S4.bat" (call "本地游戏S4.bat") else (start "" "%~dp0..\DNF.exe" 99?127.0.0.1?7001?10038?de509f65e9ccaae621cb7278fc2b8e6c?01?1?0?0?0?0?1?9n2b1c8r3w7y?0?0?19847)
