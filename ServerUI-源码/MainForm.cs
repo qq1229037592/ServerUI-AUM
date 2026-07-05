@@ -21,7 +21,7 @@ public partial class MainForm : Form
     static readonly Color Cy = Color.FromArgb(0, 190, 190);
     // 备份数量上限：超出后自动删除最旧备份
     const int MB = 10;
-    const string VER = "1.55";
+    const string VER = "1.6";
 
     // _bd：程序所在基础目录  _ad：AUM管理组件目录（优先使用子目录，否则退回到 _bd）
     readonly string _bd = AppDomain.CurrentDomain.BaseDirectory;
