@@ -10,10 +10,10 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
-    <ApplicationIcon>E:\Game\DXF\AUM管理组件\图标EXE.ico</ApplicationIcon>
+    <ApplicationIcon>..\图标EXE.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="E:\Game\DXF\AUM管理组件\图标EXE.ico" LogicalName="app.ico" />
+    <EmbeddedResource Include="..\图标EXE.ico" LogicalName="app.ico" />
   </ItemGroup>
 </Project>
