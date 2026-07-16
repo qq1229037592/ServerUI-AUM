@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * 服务端进程管理服务 (ServerService) — v1.83
+ * 服务端进程管理服务 (ServerService) — v1.85-1
  * ==================================================================
  * 
  * 【功能说明】
@@ -150,7 +150,10 @@ public class ServerService
      * 
      * 关键设置:
      *   UseShellExecute = false  — 必须为 false 才能持有进程句柄
-     *   CreateNoWindow = false   — 显示控制台窗口（用户需要看到启动日志）
+     *   CreateNoWindow = true    — 【v1.85-1】启动时不创建控制台窗口
+     *                              DfoServer 在 cmd 共享控制台中运行，
+     *                              MainWindowHandle 归属 cmd 而非 DfoServer，
+     *                              事后 ShowWindow 无法可靠隐藏，故改为启动即隐藏。
      *   EnableRaisingEvents = true — 启用 Exited 事件
      */
     public void Start(string baseDir)
@@ -160,6 +163,12 @@ public class ServerService
         var bat = Path.Combine(baseDir, "start-server.bat");
         if (!File.Exists(bat)) return;  // 脚本不存在（可能是首次使用，需要先更新）
 
+        // 【v1.85-1 修复】DfoServer 窗口隐藏失败问题
+        // 根因: DfoServer 由 start-server.bat 在共享控制台中启动，
+        //       MainWindowHandle 归属 cmd.exe 而非 DfoServer.exe，
+        //       事后 ShowWindow() 无法隐藏 DfoServer 窗口。
+        // 方案: CreateNoWindow = true，进程启动时直接不创建控制台窗口，
+        //       这是隐藏控制台程序窗口最可靠的方式。
         _batProcess = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -167,7 +176,7 @@ public class ServerService
                 FileName = bat,
                 WorkingDirectory = baseDir,
                 UseShellExecute = false,
-                CreateNoWindow = false
+                CreateNoWindow = true   // 启动时即隐藏，比事后 ShowWindow 更可靠
             },
             EnableRaisingEvents = true
         };

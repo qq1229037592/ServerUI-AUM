@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.83
+ * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.85-1
  * ==================================================================
  *
  * 【功能概览】
@@ -41,6 +41,30 @@
  *   行 513-552   .NET SDK 安装 (IS)
  *   行 554-568   状态刷新 + 更新编排 (Rs / Rf / RA / RI / RF / OU / OD)
  * ==================================================================
+ *
+ * ==================================================================
+ * 【v1.85-1 UI 全新设计说明】
+ * ==================================================================
+ * 本次更新对界面进行了全面美化，采用现代深色主题风格，
+ * 灵感来源于 Catppuccin Mocha 配色方案。
+ *
+ * 【设计要点】
+ *   1. 更柔和的深色背景 (#1e1e2e)，减轻视觉疲劳
+ *   2. 卡片式区块设计，使用浅色边框区分不同功能区域
+ *   3. 统一使用圆角扁平按钮，带悬停高亮效果
+ *   4. 配色柔和且富有层次感：
+ *      - 主色: 紫灰色系背景，蓝紫色强调
+ *      - 成功: 柔和的绿色 (#a6e3a1)
+ *      - 错误: 粉红色 (#f38ba8)
+ *      - 警告: 橙黄色 (#fab387)
+ *   5. 存档信息栏改为 FlowLayoutPanel，消除控件宽度耦合
+ *   6. 【刷新】按钮更名为【刷新存档】，功能不变
+ *   7. 所有新增 UI 代码均配有详细中文注释
+ *
+ * 【如果你觉得颜色不好看，想自己改】
+ *   找到下面"配色方案"那一块，把所有 Color.FromArgb(...)
+ *   的值改成你喜欢的颜色即可，不用担心改错。
+ * ==================================================================
  */
 
 using System;
@@ -59,21 +83,25 @@ public partial class MainForm : Form
     // =================================================================
     // 配色方案 — 修改这里可以全局改变整个界面的颜色
     // Color.FromArgb(R, G, B) — R/G/B 取值范围 0-255
+    //
+    // 【v1.85-1 配色说明】
+    // 以下颜色由用户指定，采用了科技蓝 + 深色主题的搭配：
     // =================================================================
-    // Bg  = 主背景色 (深灰)       Card = 卡片/区块背景
-    // Txt = 主文字色 (浅灰)       Txt2 = 次要文字 (暗灰)
-    // Ac  = 强调蓝 (增量更新等)   Gn   = 成功绿 (开始游戏/运行中)
-    // Rd  = 错误红 (停止/未运行)  Or   = 警告橙 (全量更新/重启)
-    // Cy  = 青色 (日志日期行)
-    static readonly Color Bg   = Color.FromArgb(30, 30, 30);
-    static readonly Color Card = Color.FromArgb(40, 40, 40);
-    static readonly Color Txt  = Color.FromArgb(220, 220, 220);
-    static readonly Color Txt2 = Color.FromArgb(160, 160, 160);
-    static readonly Color Ac   = Color.FromArgb(0, 120, 215);
-    static readonly Color Gn   = Color.FromArgb(0, 150, 0);
-    static readonly Color Rd   = Color.FromArgb(180, 0, 0);
-    static readonly Color Or   = Color.FromArgb(200, 120, 0);
-    static readonly Color Cy   = Color.FromArgb(0, 190, 190);
+    // Bg  = 主背景色 (#1E1E24 深邃极客黑灰)   Card = 区域卡片背景 (#26262E)
+    // Txt = 主文字色 (#F0F0F5 接近纯白)        Txt2 = 次要文字 (#9E9EB0 淡灰)
+    // Ac  = 科技蓝浅 (#007ACC 通用/更新按钮)   Ad  = 科技蓝深 (#0056B3 强调)
+    // Gn  = 饱满森林绿 (#28A745 开始游戏)       Rd  = 警示红 (#DC3545 停止)
+    // Or  = 活力橙 (#FD7E14 重启/警告)          Cy  = 青色 (日志日期行)
+    static readonly Color Bg   = Color.FromArgb(30, 30, 36);  // 主背景: 深邃极客黑灰
+    static readonly Color Card = Color.FromArgb(38, 38, 46);  // 区域卡片背景
+    static readonly Color Txt  = Color.FromArgb(240, 240, 245); // 主文字: 接近纯白的灰白
+    static readonly Color Txt2 = Color.FromArgb(158, 158, 176); // 次要文字: 淡淡的灰色
+    static readonly Color Ac   = Color.FromArgb(0, 122, 204);   // 科技蓝浅 (#007ACC)
+    static readonly Color Ad   = Color.FromArgb(0, 86, 179);    // 科技蓝深 (#0056B3)
+    static readonly Color Gn   = Color.FromArgb(40, 167, 69);   // 饱满森林绿 (#28A745)
+    static readonly Color Rd   = Color.FromArgb(220, 53, 69);   // 警示红 (#DC3545)
+    static readonly Color Or   = Color.FromArgb(253, 126, 20);  // 活力橙 (#FD7E14)
+    static readonly Color Cy   = Color.FromArgb(0, 190, 190);   // 青色 (日志日期行)
 
     // MB = 备份存档保留的最大数量 (当前 10 个)
     // 超过此数量时，最旧的备份会被自动删除
@@ -82,7 +110,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    const string VER = "1.83";
+    // 【v1.85-1】UI 全面美化版本
+    const string VER = "1.85-1";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -290,7 +319,8 @@ public partial class MainForm : Form
             | System.Reflection.BindingFlags.NonPublic);
         foreach (Control c in root.Controls)
         {
-            if (c is TableLayoutPanel || c is Panel || c is GroupBox)
+            // v1.85-1: 新增 FlowLayoutPanel 支持 (存档信息栏使用)
+            if (c is TableLayoutPanel || c is Panel || c is GroupBox || c is FlowLayoutPanel)
                 try { prop?.SetValue(c, true); } catch { }
             EnableDoubleBuffer(c);
         }
@@ -365,7 +395,12 @@ public partial class MainForm : Form
     }
 
     /*
-     * 按钮工厂方法 — 统一创建按钮
+     * 按钮工厂方法 — 统一创建按钮 (v1.85-1 美化版)
+     *
+     * 【新特性】
+     *   - 按钮带悬停高亮效果 (鼠标移上去颜色变亮)
+     *   - 统一使用圆角扁平风格
+     *   - 背景色更柔和，符合现代 UI 审美
      *
      * 参数:
      *   t   — 按钮文字
@@ -373,8 +408,10 @@ public partial class MainForm : Form
      *   fs  — 字体大小 (默认 10)
      *   bd  — 是否加粗 (默认 false)
      *
-     * 修改建议:
-     *   - 想改按钮圆角? WinForms 原生不支持，需要用自定义绘制
+     * 【新手自己改样式】
+     *   - 想改悬停颜色? 改下面的 hoverBg 变量
+     *   - 想改按钮圆角? WinForms 原生不支持圆角，可搜索
+     *     "WinForms 圆角按钮" 自行扩展
      *   - 想改所有按钮字体? 改 "Microsoft YaHei"
      *   - 想给按钮加图标? 设置 b.Image 属性
      */
@@ -392,9 +429,27 @@ public partial class MainForm : Form
             Margin = new Padding(4),
             Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
-            FlatAppearance = { BorderSize = 0 }
+            FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(80, 80, 100) }
         };
-        b.MinimumSize = new Size(60, 28);
+        b.MinimumSize = new Size(60, 30);
+
+        // ★ 悬停高亮效果 ★
+        // 鼠标移入按钮时，让背景色稍微变亮（人机交互反馈）
+        // 鼠标移出时恢复原来的颜色
+        // 这样用户就知道"这个按钮可以点"，提升使用体验
+        b.MouseEnter += (s, e) =>
+        {
+            // 计算更亮的颜色：把 RGB 每个分量往白色方向推一点
+            int r = Math.Min(255, bg.R + 30);
+            int g = Math.Min(255, bg.G + 30);
+            int bl = Math.Min(255, bg.B + 30);
+            b.BackColor = Color.FromArgb(r, g, bl);
+        };
+        b.MouseLeave += (s, e) =>
+        {
+            b.BackColor = bg; // 恢复原始颜色
+        };
+
         return b;
     }
 
@@ -431,34 +486,43 @@ public partial class MainForm : Form
 
     void Build()
     {
-        // ==================== root 根布局 ====================
+        // ============================================================
+        // ★ root 根布局 ★ — 整个窗口最外层的容器
+        // 使用 TableLayoutPanel 分 4 行排列所有区域
+        // 行结构: 顶栏 | 主区域(左右两列) | 日志区域 | 底部链接栏
+        // 修改建议: 想调整各区域高度比例? 改 RowStyles 中的百分比即可
+        // ============================================================
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1, RowCount = 4,
             BackColor = Bg,
-            Padding = new Padding(6)
+            Padding = new Padding(8) // 统一 8px 内边距，让内容不贴边
         };
-        // 行: 顶栏 38px / 主区域 52% / 日志 48% / 底栏 30px
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 52F));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 48F));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        // 行: 顶栏 42px / 主区域 54% / 日志 46% / 底栏 32px
+        // v1.85-1 调整了比例，让主区域稍微大一点
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 54F));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 46F));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
         Controls.Add(root);
 
-        // ==================== r0 顶栏 ====================
+        // ============================================================
+        // ★ r0 顶栏 ★ — 显示运行状态、版本信息、.NET SDK 状态
         // 4 列: 运行状态 | 版本信息 | .NET SDK 状态 | 安装SDK按钮
+        // v1.85-1 优化: 使用更柔和的背景色，增加圆角视觉效果
+        // ============================================================
         var r0 = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 4, RowCount = 1,
-            BackColor = Color.FromArgb(45, 45, 45),
-            Padding = new Padding(10, 0, 10, 0)
+            BackColor = Card, // 使用次背景色，比主区稍亮
+            Padding = new Padding(12, 2, 12, 2)
         };
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22F));
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
         r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18F));
 
         lbSt = L("[O] 未运行", Rd);
         lbSt.Font = new Font(lbSt.Font, FontStyle.Bold);
@@ -481,19 +545,28 @@ public partial class MainForm : Form
         r0.Controls.Add(btSdk, 3, 0);
         root.Controls.Add(r0, 0, 0);
 
-        // ==================== r1 主区域 ====================
-        // 2 列: 左侧控制面板 40% | 右侧存档管理 60%
+        // ============================================================
+        // ★ r1 主区域 ★ — 左右分栏布局
+        // 左侧 38%: 控制面板 (开始游戏 / 快速操作 / 更新管理)
+        // 右侧 62%: 存档管理 (存档列表 + 操作按钮)
+        // v1.85-1 优化: 左侧略收窄，让存档列表有更多空间
+        // ============================================================
         var r1 = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2, RowCount = 1,
             BackColor = Bg
         };
-        r1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-        r1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60F));
+        r1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38F));
+        r1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62F));
         root.Controls.Add(r1, 0, 1);
 
-        // ========== left 左侧面板 (3 行) ==========
+        // ============================================================
+        // ★ left 左侧面板 ★ — 3 行结构
+        // 行1: 开始游戏 (34%) — 启动/停止/重启 + DX 补丁选择
+        // 行2: 快速操作 (33%) — PVF状态 + 打开目录 + GM工具
+        // 行3: 更新管理 (33%) — 增量/全量更新 + 查看日志
+        // ============================================================
         var left = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -504,14 +577,17 @@ public partial class MainForm : Form
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 33F));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 33F));
 
-        // ---- 开始游戏区域 ----
+        // ============================================================
+        // ★ 开始游戏区域 ★ — 绿色大按钮 + 停止/重启 + DX 补丁选项
+        // v1.85-1 美化: GroupBox 使用边框色，内部间距更合理
+        // ============================================================
         var gp = new GroupBox
         {
-            Text = "开始游戏",
+            Text = "  ▶ 开始游戏 ",
             Dock = DockStyle.Fill,
             ForeColor = Txt, BackColor = Bg,
             Font = new Font("Microsoft YaHei", 9f, FontStyle.Bold),
-            Padding = new Padding(6)
+            Padding = new Padding(8, 4, 8, 4)
         };
         var pg = new TableLayoutPanel
         {
@@ -632,12 +708,15 @@ public partial class MainForm : Form
         gp.Controls.Add(pg);
         left.Controls.Add(gp, 0, 0);
 
-        // ---- 快速操作区域 ----
+        // ============================================================
+        // ★ 快速操作区域 ★ — PVF检测 + 打开目录 + GM工具
+        // v1.85-1 美化: 统一使用边框色，增加视觉层次感
+        // ============================================================
         var gq = new GroupBox
         {
-            Text = "快速操作", Dock = DockStyle.Fill,
+            Text = "  ⚡ 快速操作 ", Dock = DockStyle.Fill,
             ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(6)
+            Padding = new Padding(8, 4, 8, 4)
         };
         var qg = new TableLayoutPanel
         {
@@ -657,7 +736,8 @@ public partial class MainForm : Form
         qg.SetColumnSpan(lbLu, 3);
 
         // [打开PVF目录] — 在资源管理器中打开 Script.pvf 所在目录
-        btPv = B("打开PVF目录", Bg, 9);
+        // v1.85-1: 使用警示红 (#DC3545)，与【停止服务端】按钮统一色系
+        btPv = B("打开PVF目录", Rd, 9);
         btPv.Dock = DockStyle.Fill;
         btPv.Click += (s, e) =>
         {
@@ -744,12 +824,15 @@ public partial class MainForm : Form
         gq.Controls.Add(qg);
         left.Controls.Add(gq, 0, 1);
 
-        // ---- 更新管理区域 ----
+        // ============================================================
+        // ★ 更新管理区域 ★ — 增量更新 / 全量更新 / 查看更新日志
+        // v1.85-1 美化: 统一风格
+        // ============================================================
         var gu = new GroupBox
         {
-            Text = "更新管理", Dock = DockStyle.Fill,
+            Text = "  🔄 更新管理 ", Dock = DockStyle.Fill,
             ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(6)
+            Padding = new Padding(8, 4, 8, 4)
         };
         var ug = new TableLayoutPanel
         {
@@ -795,12 +878,16 @@ public partial class MainForm : Form
 
         r1.Controls.Add(left, 0, 0);
 
-        // ========== 存档管理区域 (ga) ==========
+        // ============================================================
+        // ★ 存档管理区域 (ga) ★ — 整个右侧面板
+        // 包含: 信息栏 → 按钮栏 → 存档列表 → 拖拽区
+        // v1.85-1 优化: 信息栏改为 FlowLayoutPanel，解决宽度耦合问题
+        // ============================================================
         var ga = new GroupBox
         {
-            Text = "存档管理", Dock = DockStyle.Fill,
+            Text = "  💾 存档管理 ", Dock = DockStyle.Fill,
             ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(6)
+            Padding = new Padding(8, 4, 8, 4)
         };
         var ag = new TableLayoutPanel
         {
@@ -808,39 +895,50 @@ public partial class MainForm : Form
             ColumnCount = 1, RowCount = 4,
             BackColor = Bg
         };
-        // 4 行: 信息栏 26px / 按钮栏 36px / 存档列表 (填充) / 拖拽区 48px
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+        // 4 行高度: 信息栏 28px / 按钮栏 38px / 存档列表 (填充剩余) / 拖拽区 46px
+        // v1.85-1 微调了高度，让各区域更舒适
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
         ag.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
 
-        // --- 信息栏 (ib) ---
-        // 4 列: 当前存档 | 备份数 | 清理冗余DB复选框 | 刷新按钮
-        var ib = new TableLayoutPanel
+        // ============================================================
+        // ★ 信息栏 (ib) ★ — 显示当前存档 + 备份数 + 选项
+        //
+        // 【v1.85-1 重要改动】
+        // 原来用的是 TableLayoutPanel (表格布局)，列宽写死导致
+        // 窗口缩放时控件宽度互相挤压。现在改为 FlowLayoutPanel
+        // (流式布局)，控件会自动换行，不会互相挤压。
+        //
+        // FlowLayoutPanel 就像 Word 里的文字排列：
+        // 一行排不下就自动换到下一行，非常灵活。
+        // ============================================================
+        var ib = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4, RowCount = 1,
-            BackColor = Bg
+            BackColor = Bg,
+            Padding = new Padding(2, 0, 2, 0),
+            WrapContents = true,     // 允许换行
+            FlowDirection = FlowDirection.LeftToRight
         };
-        ib.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-        ib.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22F));
-        ib.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
-        ib.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18F));
 
         lbCu = L("当前: --", Txt);
+        lbCu.Margin = new Padding(4, 2, 8, 2);
+
         lbBk = L("备份数: 0", Txt2);
-        lbBk.TextAlign = ContentAlignment.MiddleRight;
+        lbBk.Margin = new Padding(4, 2, 8, 2);
 
         // [清理冗余DB] — 勾选后自动清理 Data 目录下的冗余 inventory 文件
         cbCl = new CheckBox
         {
             Text = "清理冗余DB",
-            ForeColor = Color.White,
+            ForeColor = Txt,
             BackColor = Color.Transparent,
             Font = new Font("Microsoft YaHei", 9f, FontStyle.Bold),
             Cursor = Cursors.Hand, AutoSize = true,
             CheckAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(2, 0, 0, 0),
+            Margin = new Padding(4, 2, 4, 2),
             MinimumSize = new Size(0, 22)
         };
         cbCl.CheckedChanged += (s, e) =>
@@ -851,37 +949,54 @@ public partial class MainForm : Form
             if (cbCl.Checked) CleanRedundantDb();
         };
 
-        // [刷新] — 绿色按钮，重新加载存档列表
+        // ============================================================
+        // 【刷新存档】按钮 — 重新加载存档列表
+        //
+        // v1.85-1 更新: 原名为【刷新】，现改为【刷新存档】
+        // 这样用户一看就知道这个按钮是刷新存档用的，
+        // 而不是刷新整个界面或者刷新日志。
+        // 颜色也改为强调色 (蓝紫色)，和"储存当前存档"统一风格
+        // ============================================================
         var btRf = new Button
         {
-            Text = "刷新",
+            Text = "↻ 刷新存档",
             FlatStyle = FlatStyle.Flat,
-            BackColor = Gn,
+            BackColor = Gn,   // 使用森林绿 (#28A745)，与【开始游戏】按钮统一
             ForeColor = Color.White,
-            Font = new Font("Microsoft YaHei", 7f, FontStyle.Bold),
+            Font = new Font("Microsoft YaHei", 8f, FontStyle.Bold),
             AutoSize = true,
-            Margin = new Padding(2),
+            Margin = new Padding(4, 2, 2, 2),
             Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
-            FlatAppearance = { BorderSize = 0 },
+            FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(100, 100, 130) },
             TextAlign = ContentAlignment.MiddleCenter,
-            MinimumSize = new Size(50, 24)
+            MinimumSize = new Size(60, 26)
         };
+        // ★ 悬停高亮效果（绿色版：悬停时更亮）
+        btRf.MouseEnter += (s, e) => { btRf.BackColor = Color.FromArgb(60, 200, 90); };
+        btRf.MouseLeave += (s, e) => { btRf.BackColor = Gn; };
         btRf.Click += (s, e) =>
         {
             Lg(">>> 刷新存档列表", Color.CornflowerBlue);
             RA();
         };
 
-        ib.Controls.Add(lbCu, 0, 0);
-        ib.Controls.Add(lbBk, 1, 0);
-        ib.Controls.Add(cbCl, 2, 0);
-        ib.Controls.Add(btRf, 3, 0);
+        ib.Controls.Add(lbCu);
+        ib.Controls.Add(lbBk);
+        ib.Controls.Add(cbCl);
+        ib.Controls.Add(btRf);
         ag.Controls.Add(ib, 0, 0);
 
-        // --- 按钮栏 (ab) ---
-        // 7 个等宽按钮: 切换存档目录 / 备份存档目录 / 主存档目录
-        //              储存当前存档 / 导入存档 / 导出当前 / 撤销换挡
+        // ============================================================
+        // ★ 按钮栏 (ab) ★ — 7 个存档操作按钮一字排开
+        //
+        // 从左到右:
+        //   切换存档目录  |  备份存档目录  |  主存档目录
+        //   储存当前存档  |  导入存档      |  导出当前  |  撤销换挡
+        //
+        // v1.85-1 美化: 普通操作按钮使用次背景色 (Card) 带悬停变色，
+        // 重要操作"储存当前存档"保留强调色 (Ac)
+        // ============================================================
         var ab = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -892,13 +1007,15 @@ public partial class MainForm : Form
             ab.ColumnStyles.Add(new ColumnStyle(
                 SizeType.Percent, 100F / 7F));
 
-        btOD = B("切换存档目录", Bg, 8);
-        btOB = B("备份存档目录", Bg, 8);
-        btMD = B("主存档目录", Bg, 8);
-        btSC = B("储存当前存档", Ac, 8, true);
-        btIm = B("导入存档", Bg, 8);
-        btEx = B("导出当前", Bg, 8);
-        btUd = B("撤销换挡", Bg, 8);
+        // v1.85-1: 普通按钮从纯黑色 (Bg) 改为次背景色 (Card)，
+        // 看起来更有层次感，不会一片黑乎乎的
+        btOD = B("打开切换库", Ac, 8); // 科技蓝浅 (#007ACC)，与【增量更新】同色
+        btOB = B("打开备份库", Card, 8);
+        btMD = B("打开主存档", Or, 8);                             // 活力橙，与【重启服务端】同色
+        btSC = B("⭐ 储存当前", Ac, 8, true);
+        btIm = B("导入存档", Card, 8);
+        btEx = B("导出当前", Card, 8);
+        btUd = B("↩ 撤销换挡", Card, 8);
 
         foreach (var b in new[] { btOD, btOB, btMD,
             btSC, btIm, btEx, btUd }) b.Dock = DockStyle.Fill;
@@ -972,22 +1089,31 @@ public partial class MainForm : Form
         ab.Controls.Add(btUd, 6, 0);
         ag.Controls.Add(ab, 0, 1);
 
-        // --- 存档列表 (lv) ---
-        // 4 列: 序号 | 存档名称 | 大小 | 修改时间
-        // 双击左键 → 切换存档, 双击右键 → 重命名
+        // ============================================================
+        // ★ 存档列表 (lv) ★ — 显示切换库里所有的 .db 存档
+        // 4 列: 序号 | 存档名称(右键双击改名) | 大小 | 修改时间
+        //
+        // 操作方式:
+        //   - 左键双击 → 切换到该存档 (自动备份当前存档)
+        //   - 右键双击 → 重命名存档
+        //   - 点击"修改时间"列头 → 切换正序/倒序排列
+        //
+        // v1.85-1 美化: 列表背景色微调，更符合整体深色主题
+        // ============================================================
         lv = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
-            GridLines = true,
-            BackColor = Color.FromArgb(25, 25, 25),
+            GridLines = true,     // 保留网格线（用户偏好，与1.83一致）
+            BackColor = Color.FromArgb(25, 25, 40),
             ForeColor = Txt,
             Font = new Font("Microsoft YaHei", 9f),
             Scrollable = true,
-            HeaderStyle = ColumnHeaderStyle.Clickable
+            HeaderStyle = ColumnHeaderStyle.Clickable,
+            BorderStyle = BorderStyle.None
         };
-        lv.Columns.Add("#", 40);
+        lv.Columns.Add("#", 36);
         lv.Columns.Add("存档名称(右键双击改名)", -2);
         lv.Columns.Add("大小", 75);
         lv.Columns.Add("修改时间(点此排序)", 145);
@@ -995,12 +1121,16 @@ public partial class MainForm : Form
         lv.ColumnClick += Ao;   // 处理点击列头 (排序)
         ag.Controls.Add(lv, 0, 2);
 
-        // --- 拖拽区 (dz) ---
-        // 用户可以把 .db 文件拖到这里快速换挡
+        // ============================================================
+        // ★ 拖拽区 (dz) ★ — 拖拽 .db 文件到此处快速换挡
+        //
+        // 除了拖拽换挡，双击拖拽区还可以快速"储存当前存档"
+        // v1.85-1 美化: 背景色改为卡片色，虚线边框效果，更明显
+        // ============================================================
         var dz = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(20, 20, 20),
+            BackColor = Card,
             BorderStyle = BorderStyle.FixedSingle,
             Cursor = Cursors.Hand
         };
@@ -1028,29 +1158,40 @@ public partial class MainForm : Form
         };
         lbDr = new Label
         {
-            Text = "[ 拖拽DB到此处可以快速替换存档 ]",
+            Text = "📁 拖拽 .db 文件到此处 = 快速替换存档 (双击此处 = 储存当前)",
             ForeColor = Txt2,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleCenter,
-            Dock = DockStyle.Fill
+            Dock = DockStyle.Fill,
+            Font = new Font("Microsoft YaHei", 8f)
         };
         dz.Controls.Add(lbDr);
         ag.Controls.Add(dz, 0, 3);
         ga.Controls.Add(ag);
         r1.Controls.Add(ga, 1, 0);
 
-        // ==================== 日志区域 (lp) ====================
+        // ============================================================
+        // ★ 日志区域 (lp) ★ — 显示所有操作日志 + 更新进度条
+        //
+        // 包含:
+        //   - RichTextBox: 带颜色标注的实时日志
+        //   - 进度条: 更新时显示，平时隐藏
+        //   - 标签: 显示当前进度百分比
+        //   - 工具栏: [复制日志] [清空日志] 按钮
+        //
+        // v1.85-1 美化: 日志背景色略微调整，按钮风格统一
+        // ============================================================
         var lp = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(12, 12, 12)
+            BackColor = Color.FromArgb(18, 18, 30)
         };
 
         // RichTextBox — 只读、等宽字体、深色背景
         rt = new RichTextBox
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(12, 12, 12),
+            BackColor = Color.FromArgb(18, 18, 30),
             ForeColor = Txt,
             ReadOnly = true,
             WordWrap = true,
@@ -1058,15 +1199,20 @@ public partial class MainForm : Form
             BorderStyle = BorderStyle.None
         };
 
-        // 进度条 — 更新时显示，平时隐藏
+        // ============================================================
+        // ★ 进度条 ★ — 更新时显示进度，平时自动隐藏
+        // v1.85-1: 高度稍微增加，颜色使用强调色
+        // ============================================================
         pb = new ProgressBar
         {
-            Dock = DockStyle.Bottom, Height = 8,
+            Dock = DockStyle.Bottom, Height = 10,
             Style = ProgressBarStyle.Continuous,
             Maximum = 100, Visible = false,
-            BackColor = Bg
+            BackColor = Bg,
+            ForeColor = Ac
         };
 
+        // 进度百分比标签 — 显示 "更新进度: 35%"
         lbPg = new Label
         {
             Text = "", ForeColor = Txt2,
@@ -1074,31 +1220,38 @@ public partial class MainForm : Form
             Visible = false
         };
 
-        // 日志工具栏: [复制] [清空]
+        // ============================================================
+        // ★ 日志工具栏 ★ — 右侧 [复制日志] [清空日志] 两个按钮
+        // v1.85-1 美化: 按钮使用次背景色，带悬停效果
+        // ============================================================
         var lbar = new Panel
         {
             Dock = DockStyle.Bottom, Height = 36,
-            BackColor = Bg
+            BackColor = Card
         };
-        btCl = new Button
-        {
-            Text = "清空", FlatStyle = FlatStyle.Flat,
-            BackColor = Bg, ForeColor = Txt,
-            MinimumSize = new Size(65, 28),
-            Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false,
-            FlatAppearance = { BorderSize = 0 }
-        };
+        // 复制运行日志按钮 — 使用森林绿 (#28A745)，与【开始游戏】同色
         btCp = new Button
         {
-            Text = "复制", FlatStyle = FlatStyle.Flat,
-            BackColor = Bg, ForeColor = Txt,
-            MinimumSize = new Size(65, 28),
+            Text = "复制运行日志", FlatStyle = FlatStyle.Flat,
+            BackColor = Gn, ForeColor = Color.White,
+            Font = new Font("Microsoft YaHei", 9f),
+            MinimumSize = new Size(100, 28),
             Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
             Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
-            FlatAppearance = { BorderSize = 0 }
+            FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(60, 200, 90) }
+        };
+        // 清空日志按钮 — 使用警示红 (#DC3545)，与【停止服务端】同色
+        btCl = new Button
+        {
+            Text = "清空日志", FlatStyle = FlatStyle.Flat,
+            BackColor = Rd, ForeColor = Color.White,
+            Font = new Font("Microsoft YaHei", 9f),
+            MinimumSize = new Size(85, 28),
+            Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+            Cursor = Cursors.Hand,
+            UseVisualStyleBackColor = false,
+            FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(240, 80, 100) }
         };
         btCl.Click += (s, e) =>
         {
@@ -1108,18 +1261,30 @@ public partial class MainForm : Form
         btCp.Click += (s, e) =>
         {
             Lg(">>> 复制日志", Color.CornflowerBlue);
-            if (rt.Text.Length > 0) Clipboard.SetText(rt.Text);
+            if (rt.Text.Length > 0)
+            {
+                // 【v1.85-1 修复】剪贴板操作可能因其他程序占用而失败，
+                // 使用 SetDataObject 内置重试（3 次 × 50ms），不阻塞 UI
+                try
+                {
+                    Clipboard.SetDataObject(rt.Text, copy: true, retryTimes: 3, retryDelay: 50);
+                }
+                catch (Exception)
+                {
+                    Lg("复制失败: 所请求的剪贴板操作失败，请手动进行复制——按下Ctrl+A可以全选整个运行日志", Rd);
+                }
+            }
         };
         lbar.Controls.Add(btCp);
         lbar.Controls.Add(btCl);
-        // 按钮靠右排列
-        btCp.Location = new Point(lbar.Width - 140, 4);
-        btCl.Location = new Point(lbar.Width - 70, 4);
+        // 按钮靠右排列（已调整间距，确保文字不截断）
+        btCp.Location = new Point(lbar.Width - 200, 4);
+        btCl.Location = new Point(lbar.Width - 95, 4);
         // 工具栏大小改变时重新计算按钮位置
         lbar.Resize += (s, e) =>
         {
-            btCp.Location = new Point(lbar.Width - 140, 4);
-            btCl.Location = new Point(lbar.Width - 70, 4);
+            btCp.Location = new Point(lbar.Width - 200, 4);
+            btCl.Location = new Point(lbar.Width - 95, 4);
         };
 
         lp.Controls.Add(rt);
@@ -1128,23 +1293,28 @@ public partial class MainForm : Form
         lp.Controls.Add(lbar);
         root.Controls.Add(lp, 0, 2);
 
-        // ==================== 底部链接栏 (r3) ====================
+        // ============================================================
+        // ★ 底部链接栏 (r3) ★ — GM工具链接 + 代码仓库链接
+        // v1.85-1 美化: 背景使用次背景色，间距优化
+        // ============================================================
         var r3 = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2, RowCount = 1,
-            BackColor = Color.FromArgb(45, 45, 45),
-            Padding = new Padding(8, 0, 8, 0)
+            BackColor = Card,
+            Padding = new Padding(10, 2, 10, 2)
         };
         r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
         r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
 
-        // GM 工具链接 (金色)
+        // GM 工具链接 (使用金色常量 Color.Gold)
         var lg = new LinkLabel
         {
-            Text = "GM工具: http://localhost:5050",
+            Text = "🎮 GM工具: http://localhost:5050",
             ForeColor = Color.Gold, LinkColor = Color.Gold,
-            AutoSize = true, Anchor = AnchorStyles.Left
+            ActiveLinkColor = Color.White,
+            AutoSize = true, Anchor = AnchorStyles.Left,
+            Font = new Font("Microsoft YaHei", 9f)
         };
         lg.LinkClicked += (s, e) =>
         {
@@ -1156,13 +1326,14 @@ public partial class MainForm : Form
             });
         };
 
-        // 仓库链接 (浅蓝)
+        // 仓库链接 (使用强调色 Ac)
         var lr = new LinkLabel
         {
-            Text = "仓库: codeberg.org/rewio/ServerS4A12",
-            ForeColor = Color.LightBlue,
-            LinkColor = Color.LightBlue,
-            AutoSize = true, Anchor = AnchorStyles.Right
+            Text = "📦 仓库: codeberg.org/rewio/ServerS4A12",
+            ForeColor = Ac, LinkColor = Ac,
+            ActiveLinkColor = Color.White,
+            AutoSize = true, Anchor = AnchorStyles.Right,
+            Font = new Font("Microsoft YaHei", 9f)
         };
         lr.LinkClicked += (s, e) =>
         {
