@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.85-1
+     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.86
  * ==================================================================
  *
  * 【功能概览】
@@ -43,10 +43,10 @@
  * ==================================================================
  *
  * ==================================================================
- * 【v1.85-1 UI 全新设计说明】
+     * 【v1.86 UI 重设计说明】
  * ==================================================================
- * 本次更新对界面进行了全面美化，采用现代深色主题风格，
- * 灵感来源于 Catppuccin Mocha 配色方案。
+     * 本次更新采用控制台仪表盘式布局：统一圆角卡片、标题强调线、
+     * 分层状态栏和紧凑操作区。保留原有深色科技蓝色卡与全部功能。
  *
  * 【设计要点】
  *   1. 更柔和的深色背景 (#1e1e2e)，减轻视觉疲劳
@@ -70,6 +70,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -111,7 +112,7 @@ public partial class MainForm : Form
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
     // 【v1.85-1】UI 全面美化版本
-    const string VER = "1.85-1";
+    const string VER = "1.86";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -152,8 +153,7 @@ public partial class MainForm : Form
     // _st = 状态刷新定时器 (每 2 秒检查一次服务端状态)
     // _pt = 进度条定时器 (更新时每隔 200ms 推进进度)
     // _ct = 启动确认定时器 (启动 3 秒后检查 bat 是否存活)
-    // _rz = 缩放防抖定时器 (窗口大小改变 45ms 后执行缩放)
-    Timer _st, _pt, _ct, _rz;
+    Timer _st, _pt, _ct;
 
     // ===== 状态变量 =====
     int _pv;                              // 进度条当前值 (0-100)
@@ -161,17 +161,6 @@ public partial class MainForm : Form
     bool _cdBusy;                         // DX 复选框互斥处理中的互斥锁
     bool _orphanLogged;                   // 孤儿进程告警只触发一次 (避免日志刷屏)
 
-    // ===== 字体缩放系统 =====
-    // _baseFonts: 记录每个控件的原始字体 (字体名 / 字号 / 样式)
-    // _fontCache: 字体缓存 (按key缓存，避免反复 new+Dispose 导致崩溃)
-    // _lastRatio: 上一次的缩放比例 (避免重复计算)
-    // _lastScaleTick: 上一次缩放的时间戳 (节流用)
-    // RefW/RefH: 设计基准分辨率 (窗口按此比例缩放字体)
-    readonly System.Collections.Generic.Dictionary<Control, (string Fam, float Size, FontStyle Style)> _baseFonts = new();
-    readonly System.Collections.Generic.Dictionary<(string, float, FontStyle), Font> _fontCache = new();
-    float _lastRatio = -1f;
-    int _lastScaleTick;
-    const float RefW = 1180f, RefH = 780f;
 
     /*
      * 构造函数 — 程序启动时执行一次，完成所有初始化工作
@@ -202,7 +191,8 @@ public partial class MainForm : Form
         // 窗口基本属性
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96F, 96F);
-        MinimumSize = new Size(820, 560);    // 最小不能小于 820×560
+        // This dashboard needs enough vertical room for the server controls and all DX options.
+        MinimumSize = new Size(1000, 700);
         Size = new Size(1200, 820);           // 默认启动大小
         StartPosition = FormStartPosition.CenterScreen;  // 居中显示
         Text = "ServerS4A12 v" + VER;        // 窗口标题
@@ -223,31 +213,8 @@ public partial class MainForm : Form
         DoubleBuffered = true;
         EnableDoubleBuffer(this);
 
-        // 捕获控件基准字体 (缩放前保存原始字号)
-        CaptureBaseFonts(this);
-
-        // 缩放定时器 (45ms 延迟，累积多次 resize 后统一处理)
-        _rz = new Timer { Interval = 45 };
-        _rz.Tick += (s, e) =>
-        {
-            _rz.Stop();
-            _lastScaleTick = Environment.TickCount;
-            ScaleFonts();
-        };
-
-        // 窗口大小改变事件 — 节流缩放 (≥33ms 才执行)
-        SizeChanged += (s, e) =>
-        {
-            int now = Environment.TickCount;
-            if (now - _lastScaleTick >= 33) { _lastScaleTick = now; ScaleFonts(); }
-            else { _rz.Stop(); _rz.Start(); }
-        };
-
-        // DPI 改变事件 (比如拖到不同 DPI 的显示器)
-        DpiChanged += (s, e) => { _lastRatio = -1f; ScaleFonts(); };
-
-        // 窗口首次加载完成后: 缩放字体 → 系统检测 → 刷新状态
-        Load += (s, e) => { ScaleFonts(); Ck(); Rf(); };
+        // Keep text at its designed DPI-aware size. Shrinking it during resize caused clipped labels.
+        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); };
     }
 
     // =================================================================
@@ -283,29 +250,6 @@ public partial class MainForm : Form
         catch { }
     }
 
-    // 判断一个控件是否为文本类控件 (需要参与字体缩放)
-    // RichTextBox 被排除，因为缩放它的字体会清除已写入的彩色格式
-    static bool IsTextControl(Control c)
-        => c is Button || c is Label || c is LinkLabel
-        || c is CheckBox || c is GroupBox || c is ListView;
-
-    /*
-     * 捕获基准字体
-     * 遍历所有控件，保存它们的原始字体信息
-     * RichTextBox 被跳过 (缩放它会导致日志颜色丢失)
-     * 想缩放 RichTextBox? 需要先存储所有已写入文本的颜色信息
-     */
-    void CaptureBaseFonts(Control c)
-    {
-        if (c is RichTextBox) return;
-        if (IsTextControl(c))
-        {
-            var f = c.Font;
-            _baseFonts[c] = (f.FontFamily.Name, f.Size, f.Style);
-        }
-        foreach (Control ch in c.Controls) CaptureBaseFonts(ch);
-    }
-
     /*
      * 递归启用双缓冲
      * 作用: 减少 TableLayoutPanel / Panel / GroupBox 的重绘闪烁
@@ -324,74 +268,6 @@ public partial class MainForm : Form
                 try { prop?.SetValue(c, true); } catch { }
             EnableDoubleBuffer(c);
         }
-    }
-
-    /*
-     * 控件字体等比缩放
-     *
-     * 缩放逻辑:
-     *   1. 计算窗口当前大小相对于设计基准 (1180×780) 的比例
-     *   2. 比例上限 1.0 (不放大，只缩小)
-     *   3. 比例下限 0.35 (最小 35%，再小看不清)
-     *   4. 按 0.04 量化 (减少字体档位，避免微小变化)
-     *   5. 从字体缓存中取已存在的 Font，不存在则创建
-     *
-     * 为什么需要字体缓存?
-     *   new Font() + Dispose() 循环会导致 use-after-dispose 崩溃
-     *   缓存模式确保: 同族同号同样式只创建一次，控件间安全共享
-     *
-     * 修改建议:
-     *   - 想禁用缩放? 在方法开头直接 return
-     *   - 想改变基准分辨率? 改 RefW / RefH
-     *   - 想允许放大? 去掉 "if (ratio > 1f) ratio = 1f" 这一行
-     */
-    void ScaleFonts()
-    {
-        if (_baseFonts.Count == 0 || IsDisposed || !IsHandleCreated) return;
-
-        float sc = DeviceDpi / 96f;
-        if (sc <= 0) sc = 1f;
-
-        // 计算缩放比例: 取宽高比例中的较小值
-        float ratio = Math.Min(
-            ClientSize.Width  / (RefW * sc),
-            ClientSize.Height / (RefH * sc));
-
-        if (float.IsNaN(ratio) || ratio <= 0) return;
-        if (ratio > 1f) ratio = 1f;        // 最大 1 倍 (不放大)
-        if (ratio < 0.35f) ratio = 0.35f;  // 最小 35%
-
-        // 量化到 0.04 的整数倍 (减少缩放档位)
-        ratio = (float)Math.Round(ratio / 0.04f) * 0.04f;
-
-        // 比例没变? 跳过
-        if (Math.Abs(ratio - _lastRatio) < 0.001f) return;
-        _lastRatio = ratio;
-
-        SuspendLayout();
-
-        foreach (var kv in _baseFonts)
-        {
-            var c = kv.Key;
-            var b = kv.Value;  // (字体名, 原始字号, 字体样式)
-
-            // 计算新字号 (最小 5pt)
-            float size = Math.Max(5f, (float)Math.Round(b.Size * ratio, 1));
-            var key = (b.Fam, size, b.Style);
-
-            // 从缓存获取或创建
-            if (!_fontCache.TryGetValue(key, out var f))
-            {
-                try { f = new Font(b.Fam, size, b.Style); }
-                catch { continue; }
-                _fontCache[key] = f;
-            }
-
-            // 只有字体真的改变了才设置 (避免触发不必要的事件)
-            if (!ReferenceEquals(c.Font, f)) c.Font = f;
-        }
-
-        ResumeLayout(false);  // false = 不强制同步重排 (性能优化)
     }
 
     /*
@@ -453,6 +329,54 @@ public partial class MainForm : Form
         return b;
     }
 
+    // Reuses the existing color palette while giving each functional area a clear card boundary.
+    Panel Section(string title)
+    {
+        var card = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Card,
+            Padding = new Padding(12, 31, 12, 12),
+            Margin = new Padding(5)
+        };
+        card.Resize += (s, e) => card.Invalidate();
+        card.Paint += (s, e) =>
+        {
+            var bounds = card.ClientRectangle;
+            if (bounds.Width < 2 || bounds.Height < 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var border = new Pen(Color.FromArgb(78, 78, 90));
+            using var path = RoundedPath(new Rectangle(0, 0, bounds.Width - 1, bounds.Height - 1), 10);
+            e.Graphics.DrawPath(border, path);
+            using var accent = new SolidBrush(Ac);
+            e.Graphics.FillRectangle(accent, 12, 23, Math.Min(42, Math.Max(0, bounds.Width - 24)), 2);
+        };
+
+        var heading = L(title, Txt);
+        heading.Font = new Font("Microsoft YaHei", 9f, FontStyle.Bold);
+        heading.Location = new Point(12, 7);
+        heading.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        card.Controls.Add(heading);
+        return card;
+    }
+
+    static GraphicsPath RoundedPath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        int diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+        if (diameter <= 1) { path.AddRectangle(bounds); return path; }
+        var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     /*
      * 标签工厂方法 — 统一创建标签
      *
@@ -497,14 +421,14 @@ public partial class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1, RowCount = 4,
             BackColor = Bg,
-            Padding = new Padding(8) // 统一 8px 内边距，让内容不贴边
+            Padding = new Padding(12) // Wider gutter keeps the dashboard readable when resized.
         };
-        // 行: 顶栏 42px / 主区域 54% / 日志 46% / 底栏 32px
+        // 行: 顶栏 48px / 主区域 65% / 日志 35% / 底栏 34px
         // v1.85-1 调整了比例，让主区域稍微大一点
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 54F));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 46F));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 65F));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 35F));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
         Controls.Add(root);
 
         // ============================================================
@@ -516,8 +440,9 @@ public partial class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 4, RowCount = 1,
-            BackColor = Card, // 使用次背景色，比主区稍亮
-            Padding = new Padding(12, 2, 12, 2)
+            BackColor = Card,
+            Padding = new Padding(16, 5, 16, 5),
+            Margin = new Padding(5, 0, 5, 7)
         };
         r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
         r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
@@ -573,27 +498,20 @@ public partial class MainForm : Form
             ColumnCount = 1, RowCount = 3,
             BackColor = Bg
         };
-        left.RowStyles.Add(new RowStyle(SizeType.Percent, 34F));
-        left.RowStyles.Add(new RowStyle(SizeType.Percent, 33F));
-        left.RowStyles.Add(new RowStyle(SizeType.Percent, 33F));
+        left.RowStyles.Add(new RowStyle(SizeType.Percent, 42F));
+        left.RowStyles.Add(new RowStyle(SizeType.Percent, 29F));
+        left.RowStyles.Add(new RowStyle(SizeType.Percent, 29F));
 
         // ============================================================
         // ★ 开始游戏区域 ★ — 绿色大按钮 + 停止/重启 + DX 补丁选项
         // v1.85-1 美化: GroupBox 使用边框色，内部间距更合理
         // ============================================================
-        var gp = new GroupBox
-        {
-            Text = "  ▶ 开始游戏 ",
-            Dock = DockStyle.Fill,
-            ForeColor = Txt, BackColor = Bg,
-            Font = new Font("Microsoft YaHei", 9f, FontStyle.Bold),
-            Padding = new Padding(8, 4, 8, 4)
-        };
+        var gp = Section("开始游戏");
         var pg = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3, RowCount = 4,
-            BackColor = Bg
+            BackColor = Card
         };
         pg.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
         pg.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
@@ -712,17 +630,12 @@ public partial class MainForm : Form
         // ★ 快速操作区域 ★ — PVF检测 + 打开目录 + GM工具
         // v1.85-1 美化: 统一使用边框色，增加视觉层次感
         // ============================================================
-        var gq = new GroupBox
-        {
-            Text = "  ⚡ 快速操作 ", Dock = DockStyle.Fill,
-            ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(8, 4, 8, 4)
-        };
+        var gq = Section("快速操作");
         var qg = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3, RowCount = 2,
-            BackColor = Bg
+            BackColor = Card
         };
         qg.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44F));
         qg.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28F));
@@ -828,17 +741,12 @@ public partial class MainForm : Form
         // ★ 更新管理区域 ★ — 增量更新 / 全量更新 / 查看更新日志
         // v1.85-1 美化: 统一风格
         // ============================================================
-        var gu = new GroupBox
-        {
-            Text = "  🔄 更新管理 ", Dock = DockStyle.Fill,
-            ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(8, 4, 8, 4)
-        };
+        var gu = Section("更新管理");
         var ug = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2, RowCount = 2,
-            BackColor = Bg
+            BackColor = Card
         };
         ug.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
         ug.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
@@ -883,24 +791,19 @@ public partial class MainForm : Form
         // 包含: 信息栏 → 按钮栏 → 存档列表 → 拖拽区
         // v1.85-1 优化: 信息栏改为 FlowLayoutPanel，解决宽度耦合问题
         // ============================================================
-        var ga = new GroupBox
-        {
-            Text = "  💾 存档管理 ", Dock = DockStyle.Fill,
-            ForeColor = Txt, BackColor = Bg,
-            Padding = new Padding(8, 4, 8, 4)
-        };
+        var ga = Section("存档管理");
         var ag = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1, RowCount = 4,
-            BackColor = Bg
+            BackColor = Card
         };
         // 4 行高度: 信息栏 28px / 按钮栏 38px / 存档列表 (填充剩余) / 拖拽区 46px
         // v1.85-1 微调了高度，让各区域更舒适
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
         ag.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
+        ag.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
 
         // ============================================================
         // ★ 信息栏 (ib) ★ — 显示当前存档 + 备份数 + 选项
@@ -916,7 +819,7 @@ public partial class MainForm : Form
         var ib = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Bg,
+            BackColor = Card,
             Padding = new Padding(2, 0, 2, 0),
             WrapContents = true,     // 允许换行
             FlowDirection = FlowDirection.LeftToRight
@@ -964,13 +867,14 @@ public partial class MainForm : Form
             BackColor = Gn,   // 使用森林绿 (#28A745)，与【开始游戏】按钮统一
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei", 8f, FontStyle.Bold),
-            AutoSize = true,
+            AutoSize = false,
             Margin = new Padding(4, 2, 2, 2),
             Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
             FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(100, 100, 130) },
             TextAlign = ContentAlignment.MiddleCenter,
-            MinimumSize = new Size(60, 26)
+            Size = new Size(104, 28),
+            MinimumSize = new Size(104, 28)
         };
         // ★ 悬停高亮效果（绿色版：悬停时更亮）
         btRf.MouseEnter += (s, e) => { btRf.BackColor = Color.FromArgb(60, 200, 90); };
@@ -1001,7 +905,7 @@ public partial class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 7, RowCount = 1,
-            BackColor = Bg
+            BackColor = Card
         };
         for (int i = 0; i < 7; i++)
             ab.ColumnStyles.Add(new ColumnStyle(
@@ -1181,11 +1085,8 @@ public partial class MainForm : Form
         //
         // v1.85-1 美化: 日志背景色略微调整，按钮风格统一
         // ============================================================
-        var lp = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(18, 18, 30)
-        };
+        var lp = Section("运行日志");
+        lp.BackColor = Color.FromArgb(18, 18, 30);
 
         // RichTextBox — 只读、等宽字体、深色背景
         rt = new RichTextBox
@@ -1227,7 +1128,8 @@ public partial class MainForm : Form
         var lbar = new Panel
         {
             Dock = DockStyle.Bottom, Height = 36,
-            BackColor = Card
+            BackColor = Card,
+            Margin = new Padding(5, 7, 5, 0)
         };
         // 复制运行日志按钮 — 使用森林绿 (#28A745)，与【开始游戏】同色
         btCp = new Button
@@ -1275,8 +1177,10 @@ public partial class MainForm : Form
                 }
             }
         };
+        lbar.Controls.Add(lbPg);
         lbar.Controls.Add(btCp);
         lbar.Controls.Add(btCl);
+        lbPg.Location = new Point(10, 10);
         // 按钮靠右排列（已调整间距，确保文字不截断）
         btCp.Location = new Point(lbar.Width - 200, 4);
         btCl.Location = new Point(lbar.Width - 95, 4);
@@ -1289,7 +1193,6 @@ public partial class MainForm : Form
 
         lp.Controls.Add(rt);
         lp.Controls.Add(pb);
-        lp.Controls.Add(lbPg);
         lp.Controls.Add(lbar);
         root.Controls.Add(lp, 0, 2);
 
@@ -1409,7 +1312,6 @@ public partial class MainForm : Form
             }
             catch { }
             _st.Stop(); _pt.Stop(); _ct.Stop();
-            _rz?.Stop();
             Lg(">>> 已清理所有进程", Gn);
         }
         else e.Cancel = true;  // 用户取消 → 不关闭窗口
@@ -2138,76 +2040,79 @@ public partial class MainForm : Form
     async System.Threading.Tasks.Task IS()
     {
         btSdk.Enabled = false;
-        btSdk.Text = "安装中...";
+        btSdk.Text = "打开安装程序...";
 
-        var installer = Path.Combine(_ad, "dotnet-install.ps1");
-        var sdkDir = Path.Combine(_ad, "dotnet-sdk");
+        var installer = Path.Combine(_ad, "dotnet-sdk",
+            "dotnet-sdk-10.0.302-win-x64.exe");
 
         if (!File.Exists(installer))
         {
-            Lg("dotnet-install.ps1 未找到！"
-                + "请确保文件存在于 AUM管理组件 目录中", Rd);
+            Lg("未找到 .NET 10 SDK 安装程序: " + installer, Rd);
             btSdk.Enabled = true;
             btSdk.Text = "安装SDK";
             return;
         }
 
-        Lg("正在下载并安装 .NET 10 SDK 到 dotnet-sdk\\"
-            + " (约 280MB，请耐心等待)...", Color.CornflowerBlue);
-
-        await System.Threading.Tasks.Task.Run(() =>
+        try
         {
             var psi = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"& '"
-                    + installer
-                    + "' -Channel 10.0 -InstallDir '"
-                    + sdkDir + "' -NoPath\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
+                FileName = installer,
+                WorkingDirectory = Path.GetDirectoryName(installer),
+                UseShellExecute = true
             };
-            using var p = Process.Start(psi);
-            var stdout = p.StandardOutput.ReadToEnd();
-            var stderr = p.StandardError.ReadToEnd();
-            p.WaitForExit();
-
-            if (p.ExitCode == 0
-                && File.Exists(Path.Combine(sdkDir, "dotnet.exe")))
-            {
-                Lg(".NET 10 SDK 安装成功！已安装到 dotnet-sdk\\", Gn);
-                // 验证安装的版本
-                var vp = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = Path.Combine(sdkDir, "dotnet.exe"),
-                        Arguments = "--version",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    }
-                };
-                vp.Start();
-                var ver = vp.StandardOutput.ReadToEnd().Trim();
-                vp.WaitForExit();
-                if (!string.IsNullOrEmpty(ver))
-                    Lg("SDK 版本: v" + ver, Gn);
-                Ck();  // 重新检测 SDK 状态
-            }
-            else
-            {
-                Lg(".NET 10 SDK 安装失败，退出代码: "
-                    + p.ExitCode, Rd);
-                if (!string.IsNullOrEmpty(stderr))
-                    Lg("错误: " + stderr, Rd);
-            }
-        });
+            Process.Start(psi);
+            Lg("已打开微软 .NET 10 SDK 安装程序。安装完成后请重启管理器，"
+                + "再执行更新。", Gn);
+        }
+        catch (Exception ex)
+        {
+            Lg("无法启动 .NET 10 SDK 安装程序: " + ex.Message, Rd);
+        }
 
         btSdk.Enabled = true;
         btSdk.Text = "安装SDK";
+        await System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    async System.Threading.Tasks.Task CheckRepositoryConnection()
+    {
+        Lg(">>> 正在检测更新仓库连接: codeberg.org ...", Color.CornflowerBlue);
+        var status = await _up.CheckRepositoryAsync();
+        if (!status.Available)
+        {
+            Lg("[网络] 无法连接更新仓库 (" + status.Detail + ")。更新可能失败，"
+                + "建议先开启科学上网（梯子）后重试。", Rd);
+        }
+        else if (status.LatencyMs <= 800)
+        {
+            Lg("[网络] 仓库连接正常，延迟 " + status.LatencyMs
+                + " ms，可正常进行更新。", Gn);
+        }
+        else if (status.LatencyMs <= 3000)
+        {
+            Lg("[网络] 仓库连接较慢，延迟 " + status.LatencyMs
+                + " ms。可以更新，但建议开启科学上网（梯子）以提高稳定性。", Or);
+        }
+        else
+        {
+            Lg("[网络] 仓库连接延迟极高，约 " + status.LatencyMs
+                + " ms。更新可能失败，建议先开启科学上网（梯子）后重试。", Rd);
+        }
+    }
+
+    async System.Threading.Tasks.Task<bool> CanUpdate()
+    {
+        Lg(">>> 更新前检查仓库连接...", Color.CornflowerBlue);
+        var status = await _up.CheckRepositoryAsync();
+        if (status.Available && status.LatencyMs <= 3000) return true;
+
+        var reason = status.Available
+            ? "连接延迟极高（" + status.LatencyMs + " ms）"
+            : "无法连接（" + status.Detail + "）";
+        Lg("[网络降级] 仓库" + reason
+            + "。将自动重试并改用源码包同步；建议开启科学上网（梯子）提高成功率。", Or);
+        return true;
     }
 
     // =================================================================
@@ -2355,6 +2260,7 @@ public partial class MainForm : Form
      */
     async System.Threading.Tasks.Task RI()
     {
+        if (!await CanUpdate()) return;
         if (_sv.IsRunning)
         {
             Lg(">>> 检测到服务端正在运行，"
@@ -2390,6 +2296,7 @@ public partial class MainForm : Form
      */
     async System.Threading.Tasks.Task RF()
     {
+        if (!await CanUpdate()) return;
         if (_sv.IsRunning)
         {
             Lg(">>> 检测到服务端正在运行，"
