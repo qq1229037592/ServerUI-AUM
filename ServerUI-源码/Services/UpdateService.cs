@@ -27,6 +27,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Collections.Generic;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -34,6 +36,15 @@ namespace ServerUI.Services;
 
 public class UpdateService
 {
+    const string RepositoryApi = "https://codeberg.org/api/v1/repos/rewio/ServerS4A12";
+
+    public sealed class RepositoryStatus
+    {
+        public bool Available { get; init; }
+        public long LatencyMs { get; init; }
+        public string Detail { get; init; }
+    }
+
     // 实时输出事件：每次 PowerShell 输出一行日志时触发
     // MainForm 订阅此事件，将输出显示到界面上的 RichTextBox 日志区域
     public event Action<string> OutputReceived;
@@ -41,6 +52,46 @@ public class UpdateService
     // 更新完成事件：脚本执行完毕后触发
     // MainForm 订阅此事件，用于停止进度条动画并刷新界面
     public event Action<bool> Completed;
+
+    // Check the same Codeberg API used by update.ps1, so the advice matches the actual update path.
+    public async Task<RepositoryStatus> CheckRepositoryAsync()
+    {
+        var timer = Stopwatch.StartNew();
+        Exception lastError = null;
+        // This is only a preflight indicator. Keep it fast; update.ps1 performs the resilient work.
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+                using var response = await client.GetAsync(RepositoryApi,
+                    HttpCompletionOption.ResponseHeadersRead);
+                if (response.IsSuccessStatusCode)
+                {
+                    timer.Stop();
+                    return new RepositoryStatus
+                    {
+                        Available = true,
+                        LatencyMs = timer.ElapsedMilliseconds,
+                        Detail = "HTTP " + (int)response.StatusCode
+                    };
+                }
+                lastError = new HttpRequestException("HTTP " + (int)response.StatusCode);
+            }
+            catch (Exception ex) { lastError = ex; }
+
+            if (attempt < 3)
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
+        }
+
+        timer.Stop();
+        return new RepositoryStatus
+        {
+            Available = false,
+            LatencyMs = timer.ElapsedMilliseconds,
+            Detail = lastError?.GetBaseException().Message ?? "未知连接错误"
+        };
+    }
 
     /*
      * 增量更新
@@ -103,6 +154,9 @@ public class UpdateService
                        + scriptPath + "' -NonInteractive"
                        + (string.IsNullOrEmpty(args) ? "" : " " + args) + "\"";
 
+        var before = CaptureFiles(workDir);
+        OutputReceived?.Invoke("[CHECK] 已记录更新前文件状态: " + before.Count + " 个文件");
+
         // 在后台线程中运行，不阻塞 UI
         await Task.Run(() =>
         {
@@ -118,6 +172,10 @@ public class UpdateService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
+            // 【v1.85-1 修复】部分旧 CPU/Windows 不支持 CET (Control-flow Enforcement)
+            // dotnet build 时会报错 "Your Windows doesn't fully support CET"
+            // 设置环境变量 DOTNET_EnableCET=0 可禁用 CET 检查, 不影响编译结果
+            psi.Environment["DOTNET_EnableCET"] = "0";
 
             using var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
@@ -138,10 +196,58 @@ public class UpdateService
             p.BeginErrorReadLine();    // 开始异步读取错误输出
             p.WaitForExit();           // 等待 PowerShell 进程结束
 
+            // Show the user exactly which source files changed, based on the before/after file metadata.
+            var changed = DescribeFileChanges(workDir, before);
+            if (changed.Count == 0)
+                OutputReceived?.Invoke("[FILES] 本次未检测到服务端源码文件变更。");
+            else
+            {
+                OutputReceived?.Invoke("[FILES] 本次检测到 " + changed.Count + " 个文件变化:");
+                foreach (var line in changed)
+                    OutputReceived?.Invoke("[FILES] " + line);
+            }
+
             // 通过 ExitCode 判断成功或失败
             // 0 = 成功, 非0 = 失败（脚本中 exit 1 时）
             Completed?.Invoke(p.ExitCode == 0);
         });
+    }
+
+    private static Dictionary<string, (long Length, DateTime Modified)> CaptureFiles(string root)
+    {
+        var files = new Dictionary<string, (long, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(root)) return files;
+        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            // Build outputs are regenerated and do not describe repository updates.
+            var relative = Path.GetRelativePath(root, path);
+            if (relative.StartsWith(".git" + Path.DirectorySeparatorChar)
+                || relative.StartsWith("dist" + Path.DirectorySeparatorChar))
+                continue;
+            var info = new FileInfo(path);
+            files[relative] = (info.Length, info.LastWriteTime);
+        }
+        return files;
+    }
+
+    private static List<string> DescribeFileChanges(string root,
+        Dictionary<string, (long Length, DateTime Modified)> before)
+    {
+        var after = CaptureFiles(root);
+        var changes = new List<string>();
+        foreach (var item in after)
+        {
+            if (!before.TryGetValue(item.Key, out var previous))
+                changes.Add("新增 " + item.Key + " | 更新日期 " + item.Value.Modified.ToString("yyyy-MM-dd HH:mm"));
+            else if (previous.Length != item.Value.Length || previous.Modified != item.Value.Modified)
+                changes.Add("更新 " + item.Key + " | " + previous.Modified.ToString("yyyy-MM-dd HH:mm")
+                    + " -> " + item.Value.Modified.ToString("yyyy-MM-dd HH:mm"));
+        }
+        foreach (var item in before)
+            if (!after.ContainsKey(item.Key))
+                changes.Add("删除 " + item.Key + " | 原日期 " + item.Value.Modified.ToString("yyyy-MM-dd HH:mm"));
+        changes.Sort(StringComparer.OrdinalIgnoreCase);
+        return changes;
     }
 
     /*
