@@ -1,6 +1,6 @@
 /*
  * ==================================================================
-     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.86
+     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.86-5
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.86-2】新增运行日志生成、退出清理编译缓存
-    const string VER = "1.86-2";
+    // 【v1.86-5】接入Codeberg API Token认证
+    const string VER = "1.86-5";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -1199,7 +1199,7 @@ public partial class MainForm : Form
                 cbSkipLog.Checked ? Or : Txt2);
         };
         lbar.Controls.Add(cbSkipLog);
-        cbSkipLog.Location = new Point(lbar.Width - 310, 6);
+        cbSkipLog.Location = new Point(lbar.Width - 350, 6);
         lbar.Controls.Add(btCp);
         lbar.Controls.Add(btCl);
         lbPg.Location = new Point(10, 10);
@@ -1209,7 +1209,7 @@ public partial class MainForm : Form
         // 工具栏大小改变时重新计算按钮位置
         lbar.Resize += (s, e) =>
         {
-            cbSkipLog.Location = new Point(lbar.Width - 310, 6);
+            cbSkipLog.Location = new Point(lbar.Width - 350, 6);
             btCp.Location = new Point(lbar.Width - 200, 4);
             btCl.Location = new Point(lbar.Width - 95, 4);
         };
