@@ -412,6 +412,7 @@ try {    # ===== 主更新流程开始：共 5 个步骤 =====
     $dbExisted = Test-Path $DbFile
     if ($dbExisted) { Copy-Item $DbFile $DbBackup -Force; Write-Host "OK ($((Get-Item $DbFile).Length) bytes)" }
     else { Write-Host "No inventory.db, skip." }
+    Write-Host "##PROGRESS##5"
 
     Write-Host ""
     Write-Host ">>> [2/5] Downloading source <<<"
@@ -477,6 +478,7 @@ try {    # ===== 主更新流程开始：共 5 个步骤 =====
     $gmOk = $gmPS.EndInvoke($gmHandle); $gmPS.Dispose()
     Write-Host "GM download: $(if($gmOk){'OK'}else{'FAILED'})"
     $pool.Close()
+    Write-Host "##PROGRESS##20"
 
     if (-not $svrOk) {
         Write-Host "ERROR: Server source download failed."
@@ -499,6 +501,7 @@ try {    # ===== 主更新流程开始：共 5 个步骤 =====
             if ($gmSrcDir) { $gmSrcPath = $gmSrcDir.FullName }
         } catch { Write-Host "GM extraction failed: $_"; $gmOk = $false }
     }
+    Write-Host "##PROGRESS##30"
 
     Write-Host ""
     Write-Host "$(T 's_updating')$modeText) <<<"
@@ -615,6 +618,7 @@ try {    # ===== 主更新流程开始：共 5 个步骤 =====
         Write-Host "inventory.db restored."
     }
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
+    Write-Host "##PROGRESS##55"
 
     Write-Host ""
     Write-Host ">>> [4/5] Building <<<"
@@ -784,6 +788,7 @@ try {    # ===== 主更新流程开始：共 5 个步骤 =====
         Write-Host "ERROR: Update files were synchronized but the server build did not succeed."
         exit 1
     }
+    Write-Host "##PROGRESS##85"
 
 } catch {
     Write-Host "ERROR: $_"

@@ -1290,10 +1290,9 @@ public partial class MainForm : Form
         _pt.Tick += (s, e) =>
         {
             if (_pv < _stepTarget && _pv < 95) { _pv++; }
-            else if (_pv < 95) { _pv++; }       // 步骤间慢速推进
             if (_pv >= 95) _pt.Stop();
-            pb.Value = _pv;
-            lbPg.Text = "更新进度: " + _pv + "%";
+            pb.Value = Math.Min(_pv, 100);
+            lbPg.Text = "更新进度: " + pb.Value + "%";
         };
 
         _ct = new Timer { Interval = 3000 };
@@ -2359,6 +2358,9 @@ public partial class MainForm : Form
             Lg(">>> 服务端已停止，开始更新", Gn);
         }
 
+        Lg(">>> 更新前清理冗余DB...", Gn);
+        CleanRedundantDb();
+
         pb.Visible = true; lbPg.Visible = true;
         pb.Value = 0; _pv = 0; _stepTarget = 5;
         if (cbSkipLog.Checked)
@@ -2397,6 +2399,9 @@ public partial class MainForm : Form
             Lg(">>> 服务端已停止，开始更新", Gn);
         }
 
+        Lg(">>> 更新前清理冗余DB...", Gn);
+        CleanRedundantDb();
+
         pb.Visible = true; lbPg.Visible = true;
         pb.Value = 0; _pv = 0; _stepTarget = 5;
         if (cbSkipLog.Checked)
@@ -2432,10 +2437,10 @@ public partial class MainForm : Form
             var val = m.Substring("##PROGRESS##".Length);
             if (int.TryParse(val, out var pct))
             {
-                if (pct > _pv && pct <= 95)
+                if (pct > _stepTarget && pct <= 95)
                 {
-                    _pv = pct - 1;
                     _stepTarget = pct;
+                    _pv = Math.Max(_pv, pct - 5);
                 }
                 pb.Value = Math.Min(_pv, 95);
                 lbPg.Text = "更新进度: " + pb.Value + "%";
@@ -2462,8 +2467,8 @@ public partial class MainForm : Form
         var sm = System.Text.RegularExpressions.Regex.Match(m, @"\[(\d)/5\]");
         if (sm.Success && int.TryParse(sm.Groups[1].Value, out var step))
         {
-            _stepTarget = step switch { 1 => 5, 2 => 15, 3 => 35, 4 => 55, 5 => 60, _ => _stepTarget };
-            if (_pv < _stepTarget - 3) _pv = _stepTarget - 3;
+            _stepTarget = step switch { 1 => 5, 2 => 25, 3 => 55, 4 => 85, 5 => 93, _ => _stepTarget };
+            if (_pv < _stepTarget - 10) _pv = _stepTarget - 10;
             pb.Value = Math.Min(_pv, 95);
             lbPg.Text = "更新进度: " + pb.Value + "%";
         }
