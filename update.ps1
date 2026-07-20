@@ -1,270 +1,110 @@
-﻿# ==================================================================
-#  ServerS4A12 一键更新脚本 (v1.86-7)
-# ==================================================================
-#
-# 【这个脚本是干什么的？】
-#   从远程仓库（gitgud.io）拉取最新服务端源码，自动替换旧文件，
-#   编译生成新的 DfoServer.exe 和 DfoGmTool.exe，最后拉取更新日志。
-#   全流程共 5 个步骤，支持"增量更新"和"全量更新"两种模式。
-#
-# 【两种更新模式的区别】
-#   增量更新（默认）：只下载有变动的文件，速度快，适合日常更新
-#   全量更新（-FullSync）：强制覆盖所有文件，适合首次部署或出问题时使用
-#
-# 【如何手动运行这个脚本？】
-#   1. 在 AUM管理组件 目录下，右键 → 在此处打开 PowerShell
-#   2. 增量更新：  .\update.ps1
-#   3. 全量更新：  .\update.ps1 -FullSync
-#   4. 跳过日志：  .\update.ps1 -SkipCommitLog
-#   5. GUI模式：   .\update.ps1 -NonInteractive   （由ServerUI.exe调用时自动加）
-#
-# 【如何由 ServerUI.exe 调用？】
-#   ServerUI.exe 会自动调用此脚本，并添加 -NonInteractive 参数。
-#   GUI 模式下部分交互提示会被跳过，进度条通过 ##PROGRESS##N 标记传递。
-#
-# 【如果你想修改什么，看这里】
-#   - 改仓库地址：搜 "$RepoApi" 变量（第 45 行附近）
-#   - 改 API 令牌：搜 "$ApiToken" 变量（第 49 行附近）
-#   - 改重试次数：搜函数内的 "$a -le N" 循环（N 是重试次数）
-#   - 改等待秒数：搜 "Start-Sleep" 后面的数字
-#   - 改线程数：  搜 "$maxThreads" 变量
-#   - 改超时时间：搜 "TimeoutSec" 参数
-#   - 改文件保留策略：搜 "Sync-SourceFiles" 函数的过滤规则
-#   - 改编译参数：搜 "dotnet publish" 后面的参数
-#   - 改日志格式：搜 "$logLines" 的构造区域
-# ==================================================================
+﻿# ============================== ServerS4A12 一键更新脚本 ==============================
+# 支持增量更新（默认，只更新最近 3 天变更的文件）和全量同步（-FullSync 开关）
+# 全流程：[1/5] 备份数据库 → [2/5] 下载最新源码 → [3/5] 更新文件 → [4/5] 编译 → [5/5] 提交日志
+param([switch]$FullSync, [switch]$NonInteractive, [switch]$SkipCommitLog)    # -FullSync：全量同步开关；-NonInteractive：GUI非交互模式；-SkipCommitLog：跳过提交日志拉取
 
-# ---- 脚本参数 ----
-# -FullSync         : 全量同步开关，带上此参数会覆盖所有文件
-# -NonInteractive   : 非交互模式（由 ServerUI.exe 调用时自动启用）
-# -SkipCommitLog    : 跳过提交日志拉取（GUI中有【跳过更新日志】复选框对应）
-param([switch]$FullSync, [switch]$NonInteractive, [switch]$SkipCommitLog)
-
-# ---- 全局设置 ----
-# 出错时继续运行，不要因为一个小错误就中断整个更新
-# 如果想"一有错误就停止"，改成 "Stop" 即可
-$ErrorActionPreference = "Continue"
-
-# ---- 路径计算 ----
-# $PSScriptRoot = 脚本自身的所在文件夹
-# 例如脚本在 E:\Game\DXF\AUM管理组件\update.ps1
-# 则 $PSScriptRoot = E:\Game\DXF\AUM管理组件
-$ScriptRoot = $PSScriptRoot
-
-# SrcRoot = 服务端源码主目录（脚本目录下的 ServerS4A12-AUM 文件夹）
-# 这是更新操作的目标目录，所有文件都会同步到这里
-$SrcRoot = Join-Path $ScriptRoot "ServerS4A12-AUM"
-
-# ==================================================================
-#  仓库连接配置（重要！假如仓库地址或令牌变了，改这里）
-# ==================================================================
-# gitgud.io 是基于 GitLab 的代码托管平台
-# GitLab API 版本是 v4，与之前的 Codeberg API (v1, 基于 Gitea) 不同
-# 项目路径 rewo/86JP 需要 URL 编码为 rewo%2F86JP（%2F 是斜杠 / 的编码）
-$RepoApi = "https://gitgud.io/api/v4/projects/rewio%2F86JP"
-
-# UTF-8 编码器，用于正确处理中文字符
+$ErrorActionPreference = "Continue"   # 遇到非致命错误时不中断脚本，继续执行后续步骤
+$ScriptRoot = $PSScriptRoot; $SrcRoot = Join-Path $ScriptRoot "ServerS4A12-AUM"    # ScriptRoot=脚本所在目录，SrcRoot=服务器主目录
+$RepoApi = "https://gitgud.io/api/v4/projects/rewio%2F86JP"    # gitgud.io (GitLab) 仓库 API 地址
 $utf8 = [System.Text.Encoding]::UTF8
-
-# API 访问令牌（相当于密码，不要泄露给别人）
-# 这个令牌用于访问 gitgud.io 上的私有仓库
-# 如果令牌过期了，需要从 gitgud.io 网站重新生成一个
 $ApiToken = "ggio_Evb_FDif1lUTVAQkw0zKWG86MQp1OjJjZ3gK.01.101gu1kjc"
-
-# HTTP 请求头 —— GitLab API 使用 "PRIVATE-TOKEN" 方式认证
-# 旧的 Codeberg 使用的是 "Authorization: token xxx"，两者不同！
 $ApiHeaders = @{ "PRIVATE-TOKEN" = $ApiToken }
 
-# ==================================================================
-#  base64 编码的中文字符串字典
-# ==================================================================
-# 为什么用 base64？
-#   PowerShell 控制台输出中文有时会乱码，用 base64 编码可以避免这个问题。
-#   函数 T($key) 会自动解码，返回真正的中文文本。
-#
-# 如何修改或添加新文本？
-#   1. 用在线工具把中文转成 base64（比如搜 "在线base64编码"）
-#   2. 把编码后的字符串替换对应的 value
-#   3. 或者直接删掉 base64，改用普通字符串（如果控制台不乱码的话）
-# ==================================================================
+# base64 编码的中文字符串字典，避免汉字在控制台/日志中出现乱码
 $b64 = @{
-    fn_log  = "5pu05paw5pel5b+XLnR4dA=="          # 更新日志.txt
-    s_ver   = "54mI5pysOiA="                        # 版本:
-    s_up    = "5pu05paw5pe26Ze0OiA="                # 更新时间:
-    s_total = "57Sv6K6h5o+Q5LqkOiA="                # 统计提交:
-    s_hist  = "5pu05paw5Y6G5Y+yICjku47mnIDliJ3liLDnjrDlnKjvvIzljJfkuqzml7bpl7QgVVRDKzgpOg=="         # 更新历史 (从最初到现在，北京时间 UTC+8):
-    s_more  = "5pu05aSa5Y6G5Y+y5pu05paw5pel5b+X77yM6K+35Zyo55uu5b2V5p+l55yLOiA="                     # 更多历史更新日志，请在目录查看:
-    s_repo  = "5LuT5bqT5o+Q5Lqk6K6w5b2VOiA="        # 仓库提交记录:
-    s_inc   = "5aKe6YeP5pu05paw"                     # 增量更新
-    s_full  = "5YWo6YeP5ZCM5q2l"                     # 全量同步
-    s_fullsync = "5YWo6YeP5ZCM5q2lICjmiYDmnInmlofku7YpLi4u"  # 全量同步 (所有文件)...
-    s_fallback = "5pyA6L+R5peg5Y+Y5pu0IC0g5Zue6YCA5Yiw5YWo6YeP5ZCM5q2l44CC"  # 最近无变更 - 回退到全量同步。
-    s_server = "U2VydmVyUzRBMTIgLSA="               # ServerS4A12 -
-    s_updating = "Pj4+IFszLzVdIOato+WcqOabtOaWsOaWh+S7tiAo"      # >>> [3/5] 正在更新文件 (
-    s_done  = "Pj4+IOWujOaIkCEg"                     # >>> 完成!
-    s_warn1 = "5byA5aeL5pu05paw5YmN77yM6K+356Gu6K6k572R57uc54iL6YCa77yM5Lim5qOA5p+l5piv5ZCm5bey5byA5ZCv56eR5a2m5LiK572R44CC"    # 开始更新前，请确保网络畅通，并检查是否已开启科学上网。
-    s_warn2 = "5pys5Zyw5paH5Lu26Lev5b6E5Y+C6ICD77ya"            # 本地文件路径参考：
-    s_warn3 = "ICAtIOaVsOaNruW6k+WtmOahozogXFNlcnZlclM0QTEyLUFVTVxkaXN0XHdpbi14NjRcRGF0YVxpbnZlbnRvcnkuZGI="  #   - 数据库存储: \ServerS4A12-AUM\dist\win-x64\Data\inventory.db
-    s_warn4 = "ICAtIFBWRuaWh+S7tjogICBcU2VydmVyUzRBMTItQVVNXGRpc3Rcd2luLXg2NFxEYXRhXFB2ZlxTY3JpcHQucHZm"    #   - PVF文件:    \ServerS4A12-AUM\dist\win-x64\Data\Pvf\Script.pvf
-    s_warn5 = "6K+356Gu6K6k5LiK6L+w5paH5Lu25L2N572u5peg6K+v44CC"            # 请确认以上文件位置无误。
-    s_skip   = "ICBb5L+d5oqkXSA="                                   #   [保护]
-    s_prot   = "ICAo5bey5L+d5oqk77yM5LiN5Lya6KKr6KaG55GWKQ=="          #   (已保护，不会被覆盖)
+    fn_log  = "5pu05paw5pel5b+XLnR4dA=="
+    s_ver   = "54mI5pysOiA="
+    s_up    = "5pu05paw5pe26Ze0OiA="
+    s_total = "57Sv6K6h5o+Q5LqkOiA="
+    s_hist  = "5pu05paw5Y6G5Y+yICjku47mnIDliJ3liLDnjrDlnKjvvIzljJfkuqzml7bpl7QgVVRDKzgpOg=="
+    s_more  = "5pu05aSa5Y6G5Y+y5pu05paw5pel5b+X77yM6K+35Zyo55uu5b2V5p+l55yLOiA="
+    s_repo  = "5LuT5bqT5o+Q5Lqk6K6w5b2VOiA="
+    s_inc   = "5aKe6YeP5pu05paw"
+    s_full  = "5YWo6YeP5ZCM5q2l"
+    s_fullsync = "5YWo6YeP5ZCM5q2lICjmiYDmnInmlofku7YpLi4u"
+    s_fallback = "5pyA6L+R5peg5Y+Y5pu0IC0g5Zue6YCA5Yiw5YWo6YeP5ZCM5q2l44CC"
+    s_server = "U2VydmVyUzRBMTIgLSA="
+    s_updating = "Pj4+IFszLzVdIOato+WcqOabtOaWsOaWh+S7tiAo"
+    s_done  = "Pj4+IOWujOaIkCEg"
+    s_warn1 = "5byA5aeL5pu05paw5YmN77yM6K+356Gu6K6k572R57uc54iL6YCa77yM5Lim5qOA5p+l5piv5ZCm5bey5byA5ZCv56eR5a2m5LiK572R44CC"
+    s_warn2 = "5pys5Zyw5paH5Lu26Lev5b6E5Y+C6ICD77ya"
+    s_warn3 = "ICAtIOaVsOaNruW6k+WtmOahozogXFNlcnZlclM0QTEyLUFVTVxkaXN0XHdpbi14NjRcRGF0YVxpbnZlbnRvcnkuZGI="
+    s_warn4 = "ICAtIFBWRuaWh+S7tjogICBcU2VydmVyUzRBMTItQVVNXGRpc3Rcd2luLXg2NFxEYXRhXFB2ZlxTY3JpcHQucHZm"
+    s_warn5 = "6K+356Gu6K6k5LiK6L+w5paH5Lu25L2N572u5peg6K+v44CC"
+    s_skip   = "ICBb5L+d5oqkXSA="
+    s_prot   = "ICAo5bey5L+d5oqk77yM5LiN5Lya6KKr6KaG55GWKQ=="
 }
+function T($key) { return $utf8.GetString([Convert]::FromBase64String($b64[$key])) }    # 将 base64 字符串解码为中文文本
 
-# 解码函数：传入 key，返回对应的中文文本
-# 用法示例：T "s_inc"  →  返回 "增量更新"
-function T($key) {
-    return $utf8.GetString([Convert]::FromBase64String($b64[$key]))
-}
-
-# ==================================================================
-#  文件路径定义
-# ==================================================================
-# 更新日志文件 —— 每次更新后自动生成/更新，位于脚本同目录
-$LogFile = Join-Path $ScriptRoot (T "fn_log")
-
-# 玩家数据库文件（最重要！里面是你的所有角色数据）
-# 更新过程中会先备份再恢复，防止数据丢失
-$DbFile = Join-Path $SrcRoot "Server\DfoServer\Data\inventory.db"
-
-# 数据库的临时备份文件，更新完成后自动删除
-$DbBackup = Join-Path $SrcRoot "Server\DfoServer\Data\inventory.db.bak"
-
-# 临时工作目录 —— 下载的 ZIP 包和解压内容都放在这里
-# 使用系统 TEMP 目录，更新完成后会自动清理
-$TempDir = Join-Path $env:TEMP "ServerS4A12-update"
-
-# 便携版 .NET SDK 的路径 —— 如果系统没有装 SDK，脚本会使用这里的
-$LocalSdk = Join-Path $ScriptRoot "dotnet-sdk"
-
-# 提交日志缓存文件 —— 记录已经拉取过的 commit，避免重复拉取
-# 缓存在 .update-cache 隐藏目录中
+$LogFile   = Join-Path $ScriptRoot (T "fn_log")    # 更新日志文件路径（脚本同目录下）
+$DbFile = Join-Path $SrcRoot "Server\DfoServer\Data\inventory.db"    # 玩家数据数据库文件（最重要！）
+$DbBackup = Join-Path $SrcRoot "Server\DfoServer\Data\inventory.db.bak"    # 数据库临时备份文件
+$TempDir   = Join-Path $env:TEMP "ServerS4A12-update"    # 下载和解压源码用的临时目录
+$LocalSdk  = Join-Path $ScriptRoot "dotnet-sdk"    # 本地 .NET SDK 安装目录（脚本同目录下）
 $CommitCacheFile = Join-Path $ScriptRoot ".update-cache\commits.json"
+$ChinaTZ   = [System.TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")    # 中国标准时间（UTC+8）时区对象
 
-# 中国时区 (UTC+8) —— 所有时间显示都转成北京时间
-$ChinaTZ = [System.TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")
-
-# ==================================================================
-#  工具函数
-# ==================================================================
-
-# ---- 时区转换函数 ----
-# 把 GitLab API 返回的 UTC 时间转换成北京时间 (yyyy-MM-dd 格式)
-# 参数 $d: API 返回的时间字符串，例如 "2026-07-20T12:30:00Z"
-# 返回:   "2026-07-20"（北京时间）
-function ToChinaDate($d) {
-    $dateStr = "$d"   # 强制转字符串，防止某些情况下收到数组导致报错
+function ToChinaDate($d) {    # 将 UTC 时间字符串转换为北京时间（UTC+8）的日期格式 yyyy-MM-dd
+    $dateStr = "$d"           # 强制转字符串，防止数组干扰
     $dt = [DateTimeOffset]::Parse($dateStr, [System.Globalization.CultureInfo]::InvariantCulture)
     return ([System.TimeZoneInfo]::ConvertTime($dt, $ChinaTZ)).ToString("yyyy-MM-dd")
 }
 
-# ---- 文件下载函数（带重试） ----
-# 与 Invoke-RepositoryRequest 不同，这个函数用于下载二进制文件
-# 参数 $uri:    下载地址
-# 参数 $target: 保存到的本地路径
-# 最多重试 5 次，每次失败后等待时间翻倍（1秒→2秒→4秒→8秒）
-# 这种"指数退避"策略可以避免服务器过载时越重试越糟
 function Download-File($uri, $target) {
-    # 最多尝试 5 次下载
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         try {
             Write-Host "Download attempt $attempt/5: $uri"
-            # Invoke-WebRequest = PowerShell 内置的下载命令，类似于 curl
-            # -UseBasicParsing: 不解析 HTML，只下载原始字节（更快更稳定）
-            # -TimeoutSec: 60 秒超时（大文件可能需要更长时间）
             Invoke-WebRequest -Uri $uri -OutFile $target -UseBasicParsing -TimeoutSec 60 -Headers $ApiHeaders
-            # 检查下载结果：文件存在 + 大小大于 1KB
-            if ((Test-Path $target) -and (Get-Item $target).Length -gt 1024) {
-                return $true   # 下载成功
-            }
+            if ((Test-Path $target) -and (Get-Item $target).Length -gt 1024) { return $true }
             throw "Downloaded file is missing or too small."
         } catch {
-            # 下载失败：删除不完整的文件，打印警告
             Remove-Item $target -Force -ErrorAction SilentlyContinue
             Write-Host "WARNING: download attempt $attempt failed: $_"
-            # 如果不是最后一次尝试，等待一段时间再重试
-            # [math]::Pow(2, $attempt-1) = 2^(attempt-1) = 1, 2, 4, 8 秒
             if ($attempt -lt 5) { Start-Sleep -Seconds ([math]::Pow(2, $attempt - 1)) }
         }
     }
-    return $false   # 5 次都失败，返回失败
+    return $false
 }
 
-# ---- API 请求函数（轻量 GET，带重试） ----
-# 用于调用 GitLab API 获取 JSON 数据（如 commit 历史）
-# 参数 $uri:        API 地址
-# 参数 $MaxAttempts: 最大重试次数（默认 2 次）
-# 参数 $TimeoutSec:  超时秒数（默认 8 秒，API 调用应该很快）
-# 参数 $Quiet:       静默模式（不打印 [API] 日志）
 function Invoke-RepositoryRequest($uri, [int]$MaxAttempts = 2, [int]$TimeoutSec = 8, [switch]$Quiet) {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
             if (-not $Quiet) { Write-Host "[API] Request $attempt/$MaxAttempts" }
-            # 发送 GET 请求，返回响应对象（包含 StatusCode 和 RawContentStream）
             return Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $ApiHeaders
         } catch {
             Write-Host "WARNING: API attempt $attempt/$MaxAttempts failed: $_"
             if ($attempt -lt $MaxAttempts) {
-                $delay = [math]::Pow(2, $attempt - 1)  # 指数退避：1秒→2秒→4秒...
+                $delay = [math]::Pow(2, $attempt - 1)
                 Write-Host "[API] Retrying in $delay second(s)..."
                 Start-Sleep -Seconds $delay
             }
         }
     }
     Write-Host "WARNING: API unavailable after $MaxAttempts attempts. Falling back to archive-only update."
-    return $null   # 所有重试都失败，返回空
+    return $null
 }
 
-# ---- 提交缓存：读取 ----
-# 从 .update-cache\commits.json 读取之前缓存的 commit 记录
-# 缓存的目的是：下次更新时只拉取新的 commit，不用每次都拉全部历史
-# 返回: commit 数组，格式 [@{Sha=...; Date=...; Message=...}, ...]
-# 如果文件不存在或损坏，返回空数组 @()
 function Read-CommitCache {
-    if (-not (Test-Path $CommitCacheFile)) { return @() }   # 缓存文件不存在，返回空
+    if (-not (Test-Path $CommitCacheFile)) { return @() }
     try {
-        # Get-Content -Raw: 把整个文件读成一个字符串（而不是数组）
-        # ConvertFrom-Json: 把 JSON 字符串转成 PowerShell 对象
         $data = Get-Content $CommitCacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        return @($data)   # @() 确保返回值是数组类型
+        return @($data)
     } catch {
         Write-Host "WARNING: commit cache is invalid and will be rebuilt."
         return @()
     }
 }
 
-# ---- 提交缓存：写入 ----
-# 把 commit 数据写入 .update-cache\commits.json
-# 参数 $commits: commit 数组
 function Write-CommitCache($commits) {
-    # 确保 .update-cache 目录存在
     $directory = Split-Path $CommitCacheFile -Parent
-    if (-not (Test-Path $directory)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-    # ConvertTo-Json -Depth 4: 把 PowerSehll 对象转成 JSON，嵌套深度设为 4 层
-    # Set-Content -Encoding UTF8: 以 UTF-8 编码写入文件
+    if (-not (Test-Path $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
     $commits | ConvertTo-Json -Depth 4 | Set-Content $CommitCacheFile -Encoding UTF8
 }
 
-# ==================================================================
-#  核心函数：同步提交历史 (Sync-CommitHistory)
-# ==================================================================
-# 这是 [5/5] 步骤的核心，负责从 gitlab API 拉取仓库的 commit 记录。
-#
-# 执行策略（两层）：
-#   1. "优化方案"：先读本地缓存，只拉取比缓存更新的 commit
-#      （利用 Runspace 多线程并行拉取，速度快）
-#   2. "兜底方案"：如果优化方案没拉到数据（缓存失效/网络问题），
-#      改用传统的单线程逐页拉取全量 commit（较慢但可靠）
-#
-# 返回: @{ Commits=数组; Complete=是否完整; Refreshed=是否有新数据 }
 function Sync-CommitHistory {
-    # ---- 第一步：读取缓存，建立已知 commit 索引 ----
     $cached = Read-CommitCache
-    $known = @{}   # 哈希表：key=commit SHA, value=commit 对象（用于快速查重）
-    $newestDate = [DateTimeOffset]::MinValue   # 缓存中最新的 commit 时间
-
+    $known = @{}
+    $newestDate = [DateTimeOffset]::MinValue
     foreach ($commit in $cached) {
         $s = "$($commit.Sha)"
         if ($s) {
@@ -276,71 +116,39 @@ function Sync-CommitHistory {
         }
     }
 
-    # 确定查询起点（since 参数）
-    # 如果有缓存，从最新缓存时间（减 1 秒防边界问题）开始拉
-    # 如果没有缓存，拉最近 3 年的历史
     if ($cached.Count -gt 0 -and $newestDate -ne [DateTimeOffset]::MinValue) {
         $sinceStr = "&since=" + $newestDate.AddSeconds(-1).ToString("yyyy-MM-ddTHH:mm:ssZ")
     } else {
         $sinceStr = "&since=" + (Get-Date).AddYears(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
 
-    $newCount = 0          # 本次新增的 commit 数量
-    $timeBudget = 120      # 总超时 120 秒（多页拉取的总时间预算）
-    $startTime = Get-Date
-
-    # 线程池大小：取 CPU 核心数的 75%，最少 3 个线程，最多 16 个
-    # 例如 8 核 CPU → 6 线程；4 核 → 3 线程；32 核 → 16 线程
+    $newCount = 0
+    $timeBudget = 120; $startTime = Get-Date
     $cpuCores = [Environment]::ProcessorCount
     $maxThreads = [Math]::Max(3, [Math]::Min(16, [Math]::Ceiling($cpuCores * 0.75)))
-
-    # 构造 API URL 模板
-    # GitLab API v4 的 commit 查询格式：
-    #   /projects/:id/repository/commits?ref_name=分支&per_page=每页条数&since=起始时间&page=页码
-    # ref_name=main ：从 main 分支拉
-    # per_page=50  ：每页最多 50 条（GitLab 最大允许 100）
     $uriBase = "$RepoApi/repository/commits?ref_name=main&per_page=50$sinceStr&page="
 
-    # ================================================================
-    #  阶段 1：先拉第 1 页，确认是否有数据、是否需要多页
-    # ================================================================
+    # 阶段1: 先拉第1页 (3次重试)，确认有无数据/是否需要多页
     try {
         $r1 = $null
-        # 第 1 页最多重试 10 次（因为这是关键的第一步，失败了后面都没意义）
         for ($a = 1; $a -le 10; $a++) {
             try {
                 $r1 = Invoke-WebRequest -Uri ($uriBase + "1") -UseBasicParsing -TimeoutSec 10 -Headers $ApiHeaders
                 break
-            } catch {
-                if ($a -lt 10) { Start-Sleep 3 }   # 等 3 秒再重试
-            }
+            } catch { if ($a -lt 10) { Start-Sleep 3 } }
         }
         if (-not $r1) { throw "第1页拉取失败 (10次重试后)" }
-
-        # 将 API 返回的 JSON 转成对象数组
         $items = $utf8.GetString($r1.RawContentStream.ToArray()) | ConvertFrom-Json
-        if ($items.Count -eq 0) {
-            return @{ Commits=@(); Complete=$false; Refreshed=$false }
-        }
+        if ($items.Count -eq 0) { return @{ Commits=@(); Complete=$false; Refreshed=$false } }
 
-        # 解析第 1 页的 commit 数据
-        # GitLab API 返回的字段（与之前 Codeberg 不同！）：
-        #   id             → commit 的 SHA 哈希
-        #   title          → commit 标题（第一行消息）
-        #   committed_date → commit 时间
         foreach ($item in $items) {
-            $sha = $item.id                        # SHA 哈希（GitLab 用 id，不是 sha）
-            if ($known.ContainsKey($sha)) { continue }  # 已缓存，跳过
-            $known[$sha] = [pscustomobject]@{
-                Sha     = "$sha"
-                Date    = "$($item.committed_date)"     # GitLab 用 committed_date
-                Message = "$($item.title)"              # GitLab 用 title（第一行）
-            }
+            $sha = $item.id
+            if ($known.ContainsKey($sha)) { continue }
+            $known[$sha] = [pscustomobject]@{Sha="$sha"; Date="$($item.committed_date)"; Message="$($item.title)"}
             $newCount++
         }
-        Write-Host "##PROGRESS##60"   # 进度标记：60%（第 1 页已拉完）
+        Write-Host "##PROGRESS##60"
 
-        # 如果第 1 页不满 50 条 → 说明只有一页，直接返回
         if ($items.Count -lt 50) {
             $merged = @($known.Values | Sort-Object {[DateTimeOffset]"$($_.Date)"} -Descending)
             if ($newCount -gt 0) { Write-CommitCache $merged }
@@ -353,111 +161,62 @@ function Sync-CommitHistory {
         return @{ Commits=$merged; Complete=($merged.Count -gt 0); Refreshed=($newCount -gt 0) }
     }
 
-    # ================================================================
-    #  阶段 2：多页并行拉取（RunspacePool 线程池）
-    # ================================================================
-    # 为什么用并行？
-    #   逐页串行拉取太慢了，每页都要等上一页完成。
-    #   用线程池可以同时拉多页，大幅节省时间。
-    # 为什么用哈希索引？
-    #   防止 PowerShell 的引用比较机制导致 Remove 出错。
+    # 阶段2: 多页并行拉取 (RunspacePool, 哈希索引防 Remove 引用 bug)
     Write-Host "[提交日志] 并行拉取 ($maxThreads 线程 / $cpuCores 核心)..."
     try {
-        # RunspaceFactory = PowerShell 的多线程池
-        # 参数 (1, $maxThreads) = 最少 1 个，最多 $maxThreads 个线程
         $pool = [RunspaceFactory]::CreateRunspacePool(1, $maxThreads)
         $pool.Open()
+        $active = @{}           # Page → {PS, Handle}
+        $morePages = $true
+        $nextPage = 2
 
-        $active = @{}        # 活跃任务表：Page → {PS, Handle}
-        $morePages = $true   # 是否还有更多页
-        $nextPage = 2        # 下一页的页码（第 1 页已在阶段 1 拉过了）
-
-        # 主循环：当还有页要拉 或 还有活跃任务时，继续运行
         while ($morePages -or $active.Count -gt 0) {
-            # 检查是否超时
             $elapsed = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 0)
-            if ($elapsed -ge $timeBudget) {
-                Write-Host "[提交日志] 已达时间预算"
-                $morePages = $false
-            }
+            if ($elapsed -ge $timeBudget) { Write-Host "[提交日志] 已达时间预算"; $morePages = $false }
 
-            # ---- 发射新任务：填满线程池 ----
+            # 发射 (填满线程池)
             while ($active.Count -lt $maxThreads -and $morePages -and $elapsed -lt $timeBudget) {
-                $pg = $nextPage++   # 页码递增
-
-                # 创建新的 PowerShell 任务
-                $ps = [PowerShell]::Create()
-                $ps.RunspacePool = $pool
-
-                # 注入内联脚本（在独立线程中执行）
-                # 为什么要用内联脚本而不用函数？
-                #   因为 Runspace 不能直接调用外部函数，需要把代码包进去
+                $pg = $nextPage++
+                $ps = [PowerShell]::Create(); $ps.RunspacePool = $pool
                 [void]$ps.AddScript({
                     param($u, $tok)
                     $enc = [System.Text.Encoding]::UTF8
-                    $hdrs = @{ "PRIVATE-TOKEN" = $tok }   # GitLab API 认证头
-                    # 最多重试 10 次
+                    $hdrs = @{ "PRIVATE-TOKEN" = $tok }
                     for ($a = 1; $a -le 10; $a++) {
                         try {
                             $r = Invoke-WebRequest -Uri $u -Headers $hdrs -UseBasicParsing -TimeoutSec 10
                             $d = $enc.GetString($r.RawContentStream.ToArray()) | ConvertFrom-Json
                             return $d
-                        } catch {
-                            if ($a -lt 10) { Start-Sleep 3 }
-                        }
+                        } catch { if ($a -lt 10) { Start-Sleep 3 } }
                     }
                     return $null
                 })
-                # 传入参数：API URL 和令牌
                 [void]$ps.AddArgument($uriBase + $pg)
                 [void]$ps.AddArgument($ApiToken)
-
-                # 记录任务并异步启动
                 $active[$pg] = @{PS=$ps; Handle=$ps.BeginInvoke()}
             }
 
-            # 没有活跃任务了，退出循环
             if ($active.Count -eq 0) { break }
 
-            # ---- 收集已完成的任务 ----
-            # 找到所有 IsCompleted = $true 的任务
+            # 收集已完成 (用 key 查找, 不用引用比较)
             $doneKeys = @($active.Keys | Where-Object { $active[$_].Handle.IsCompleted })
-            if ($doneKeys.Count -eq 0) {
-                Start-Sleep -Milliseconds 200   # 没有完成的，等 200 毫秒再检查
-                continue
-            }
+            if ($doneKeys.Count -eq 0) { Start-Sleep -Milliseconds 200; continue }
 
-            # 处理每个已完成的任务
             foreach ($pg in $doneKeys) {
                 $task = $active[$pg]
-                $items = $task.PS.EndInvoke($task.Handle)   # 获取返回值
+                $items = $task.PS.EndInvoke($task.Handle)
                 $task.PS.Dispose()
                 $active.Remove($pg)
 
-                # 如果这页没数据 → 没有更多页了
-                if (-not $items -or $items.Count -eq 0) {
-                    $morePages = $false
-                    break
-                }
-
-                # 解析 commit 数据（和阶段 1 的逻辑相同）
+                if (-not $items -or $items.Count -eq 0) { $morePages = $false; break }
                 foreach ($item in $items) {
                     $sha = $item.id
                     if ($known.ContainsKey($sha)) { continue }
-                    $known[$sha] = [pscustomobject]@{
-                        Sha     = "$sha"
-                        Date    = "$($item.committed_date)"
-                        Message = "$($item.title)"
-                    }
+                    $known[$sha] = [pscustomobject]@{Sha="$sha"; Date="$($item.committed_date)"; Message="$($item.title)"}
                     $newCount++
                 }
-
-                # 动态更新进度条，公式：60 + (页码/11) * 33，范围 60~93
-                # 页码越大，进度越接近 93%
                 $pp = 60 + [math]::Min(33, [math]::Round(($pg / 11) * 33))
                 Write-Host "##PROGRESS##$pp"
-
-                # 如果这页不满 50 条 → 最后一页，没有更多了
                 if ($items.Count -lt 50) { $morePages = $false; break }
             }
         }
@@ -466,135 +225,81 @@ function Sync-CommitHistory {
         Write-Host "[提交日志] 并行拉取中断: $_"
     }
 
-    # ---- 结果汇总 ----
-    # 按 commit 日期降序排列（最新的在前面）
     $merged = @($known.Values | Sort-Object {[DateTimeOffset]"$($_.Date)"} -Descending)
     if ($newCount -gt 0) { Write-CommitCache $merged }
-    Write-Host "##PROGRESS##93"   # 93% 进度
+    Write-Host "##PROGRESS##93"
     Write-Host "[提交日志] 缓存: $($merged.Count) 条 ($newCount 新增)。"
     return @{ Commits=$merged; Complete=($merged.Count -gt 0); Refreshed=($newCount -gt 0) }
 }
 
-# ---- ZIP 文件校验函数 ----
-# 检查 ZIP 包是否有效（能正常打开且内有文件）
-# 防止下载了损坏的 ZIP 包导致后续解压失败
 function Test-ZipFile($path) {
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
-        $valid = $zip.Entries.Count -gt 0   # 至少有一个文件才算有效
+        $valid = $zip.Entries.Count -gt 0
         $zip.Dispose()
         return $valid
-    } catch {
-        return $false
-    }
+    } catch { return $false }
 }
 
-# ==================================================================
-#  文件同步函数 (Sync-SourceFiles)
-# ==================================================================
-# 把下载解压后的源码目录内容同步到目标目录
-# 三级校验策略（由快到慢，逐级递进）：
-#   第 1 级 —— 文件大小 + 修改时间 → 完全一致则跳过（最快，无需读文件内容）
-#   第 2 级 —— SHA-256 哈希比对 → 内容相同则不复制（元数据不同但内容相同）
-#   第 3 级 —— 内容确实不同 → 复制并验证 SHA-256（每次写入后都校验一次）
-#
-# 参数 $from: 源目录（解压出的临时目录）
-# 参数 $to:   目标目录（ServerS4A12-AUM）
-# 返回: 变更的文件数量
 function Sync-SourceFiles($from, $to) {
-    $changes = 0       # 变更计数
-    $srcList = [System.Collections.ArrayList]::new()   # 变更文件详情列表（用于写入文件变更日志）
-    $buildCount = 0    # 构建产物计数（.dll/.exe 等，只统计不展开）
-    $dataCount = 0     # 数据文件计数（.db/.pvf 等）
-    $otherCount = 0    # 其他文件计数
-
-    # 遍历源目录中的所有文件
+    $changes = 0
+    $srcList = [System.Collections.ArrayList]::new()
+    $buildCount = 0; $dataCount = 0; $otherCount = 0
     Get-ChildItem $from -File -Recurse | ForEach-Object {
-        # 计算相对路径（去掉源目录前缀）
         $relative = $_.FullName.Substring($from.Length).TrimStart('\')
-
-        # ---- 过滤规则：以下文件不处理 ----
-        # .git 目录和 dist 目录是特殊目录，不参与同步
         if ($relative -match '(^|\\)(\.git|dist)(\\|$)') { return }
-        # 玩家数据库由脚本单独备份恢复，不参与文件同步
         if ($relative -match '(^|\\)inventory\.db(\.bak)?$') { return }
-        # 启动脚本是用户可能自行修改的，不覆盖
         if ($relative -match '(^|\\)start-server\.(bat|sh)$') { return }
-
         $destination = Join-Path $to $relative
         $existing = Get-Item $destination -ErrorAction SilentlyContinue
+        # Level 1: size and timestamp. Matching metadata can skip hashing entirely.
+        if ($existing -and $existing.Length -eq $_.Length -and $existing.LastWriteTimeUtc -eq $_.LastWriteTimeUtc) { return }
 
-        # ---- 第 1 级：大小 + 时间戳完全匹配 → 直接跳过 ----
-        if ($existing -and $existing.Length -eq $_.Length -and $existing.LastWriteTimeUtc -eq $_.LastWriteTimeUtc) {
-            return   # ForEach-Object 中的 return 相当于 continue
-        }
-
-        # ---- 第 2 级：时间戳不同但内容可能相同 → SHA-256 比对 ----
+        # Level 2: metadata differs, so compare SHA-256 and avoid copying identical content.
         $sameContent = $false
         if ($existing) {
-            # Get-FileHash 计算文件的 SHA-256 指纹
-            # SHA-256 碰撞概率极低（约 2^-256），可以放心用来判断文件是否相同
             $sourceHash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
             $destinationHash = (Get-FileHash $destination -Algorithm SHA256).Hash
             $sameContent = $sourceHash -eq $destinationHash
         }
-        if ($sameContent) { return }   # 内容相同，跳过
+        if ($sameContent) { return }
 
-        # ---- 第 3 级：内容不同 → 复制（带重试和校验） ----
+        # Level 3: content differs. Retry write and verify the copied SHA-256 each time.
         $updated = $false
         for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
-                # 确保目标目录存在
                 $directory = Split-Path $destination -Parent
-                if (-not (Test-Path $directory)) {
-                    New-Item -ItemType Directory -Path $directory -Force | Out-Null
-                }
-                # 复制文件
+                if (-not (Test-Path $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
                 Copy-Item $_.FullName $destination -Force
-
-                # 写入后立即校验 SHA-256，确保复制完整
                 $sourceHash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
                 $destinationHash = (Get-FileHash $destination -Algorithm SHA256).Hash
-                if ($sourceHash -ne $destinationHash) {
-                    throw "SHA-256 verification failed."
-                }
-
-                # 同步时间戳到目标文件
+                if ($sourceHash -ne $destinationHash) { throw "SHA-256 verification failed." }
                 [System.IO.File]::SetLastWriteTimeUtc($destination, $_.LastWriteTimeUtc)
                 $updated = $true
                 break
             } catch {
                 Write-Host "WARNING: file sync $attempt/3 failed for ${relative}: $_"
-                if ($attempt -lt 3) {
-                    Start-Sleep -Seconds ([math]::Pow(2, $attempt - 1))
-                }
+                if ($attempt -lt 3) { Start-Sleep -Seconds ([math]::Pow(2, $attempt - 1)) }
             }
         }
-
         if ($updated) {
-            # 判断是"更新"还是"下载"（取决于目标文件之前是否存在）
             $action = if ($existing) { "更新" } else { "下载" }
             $detail = "$action $relative | $($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-
-            # 获取文件扩展名和文件名（小写，便于分类比较）
             $ext = [System.IO.Path]::GetExtension($relative).ToLower()
             $name = [System.IO.Path]::GetFileName($relative).ToLower()
 
-            # ---- 文件分类输出 ----
-            # [FILE:CS] 前缀 → 源码类文件，在 GUI 中用绿色显示
-            # 其他类型 → 只统计不展开，在最后汇总输出
+            # 分类: 源码展开 | 构建/数据/其他 汇总
             if ($ext -in @('.cs','.csproj','.sln','.sql','.xml','.json','.etc','.bat','.sh','.ps1','.md','.txt','.yml','.yaml') -or
                 $name -in @('app.manifest','.gitignore','.gitattributes')) {
-                Write-Host "[FILE:CS] $detail"       # 源码变更，详细输出
+                Write-Host "[FILE:CS] $detail"
             } elseif ($ext -in @('.dll','.exe','.pdb','.so','.dylib','.lib','.a','.pch','.obj','.ilk','.exp')) {
-                $buildCount++                        # 构建产物，只计数
+                $buildCount++
             } elseif ($ext -in @('.db','.db-bak','.db-wal','.db-shm','.pvf')) {
-                $dataCount++                         # 数据文件，只计数
+                $dataCount++
             } else {
-                $otherCount++                        # 其他文件，只计数
+                $otherCount++
             }
-
             [void]$srcList.Add($detail)
             $changes++
         } else {
@@ -602,13 +307,12 @@ function Sync-SourceFiles($from, $to) {
         }
     }
 
-    # ---- 输出汇总信息 ----
-    # [FILE:SUM] 前缀 → 在 GUI 中以橙色显示
+    # 汇总行
     if ($buildCount -gt 0) { Write-Host "[FILE:SUM] 构建产物: ${buildCount}个文件重新生成" }
     if ($dataCount -gt 0)  { Write-Host "[FILE:SUM] 数据文件: ${dataCount}个已同步" }
     if ($otherCount -gt 0) { Write-Host "[FILE:SUM] 其他文件: ${otherCount}个变更" }
 
-    # ---- 将变更详情写入文件变更日志 ----
+    # 全量详情落盘
     if ($srcList.Count -gt 0) {
         $logPath = Join-Path $to "..\文件变更日志.txt"
         try {
@@ -622,29 +326,17 @@ function Sync-SourceFiles($from, $to) {
     return $changes
 }
 
-# ==================================================================
-#  清理过期源码文件 (Remove-StaleSourceFiles)
-# ==================================================================
-# 删除目标目录中存在但源仓库中已删除的 .cs 文件
-# 只在 Server 和 Tool 目录中执行，不会误删用户数据
-#
-# 参数 $from: 源目录（新下载的代码）
-# 参数 $to:   目标目录（本地代码）
-# 返回: 删除的文件数量
 function Remove-StaleSourceFiles($from, $to) {
     $removed = 0
+    # Only remove stale C# source files from repository-managed code directories.
+    # Runtime data, inventory.db, launch scripts, and user files are never considered here.
     foreach ($folder in @("Server", "Tool")) {
         $localFolder = Join-Path $to $folder
         if (-not (Test-Path $localFolder)) { continue }
-
-        # 只检查 .cs 源码文件
         Get-ChildItem $localFolder -File -Recurse -Filter "*.cs" | ForEach-Object {
             $relative = $_.FullName.Substring($to.Length).TrimStart('\')
-            # 跳过 bin/obj 编译输出目录
             if ($relative -match '(^|\\)(bin|obj)(\\|$)') { return }
-
             $sourcePath = Join-Path $from $relative
-            # 如果源仓库中不存在这个文件 → 删除它
             if (-not (Test-Path $sourcePath)) {
                 Remove-Item $_.FullName -Force
                 Write-Host "[FILE] 删除过期源码 $relative"
@@ -655,51 +347,16 @@ function Remove-StaleSourceFiles($from, $to) {
     return $removed
 }
 
-# ==================================================================
-#  .NET SDK 检测函数
-# ==================================================================
-# 按优先级查找可用的 .NET SDK：
-#   1. 系统 PATH 中的 dotnet（全局安装）
-#   2. C:\Program Files\dotnet（标准安装位置）
-#   3. 本地的 dotnet-sdk 目录（便携版，放在 AUM管理组件 下）
-#
-# 返回: dotnet.exe 的完整路径，找不到则返回 $null
-function Get-DotNetExe {
-    # 优先级 1：系统 PATH 中的 dotnet
-    # "dotnet" 不带路径，会搜索 PATH 环境变量
+function Get-DotNetExe {    # 检测 .NET SDK 是否存在，按优先级：系统全局 > Program Files > 本地 dotnet-sdk 目录
     $sys = "dotnet"
-    try {
-        $v = & dotnet --version 2>&1
-        # 检查版本号是否 >= 10（数字比较，不是字符串比较）
-        if ($LASTEXITCODE -eq 0 -and $v -match "^(\d+)\.(\d+)" -and [int]$matches[1] -ge 10) {
-            return $sys
-        }
-    } catch { }
-
-    # 优先级 2：Program Files 标准安装位置
-    try {
-        $pf = "$env:ProgramFiles\dotnet\dotnet.exe"
-        if (Test-Path $pf) {
-            $v = & $pf --version 2>&1
-            if ($LASTEXITCODE -eq 0 -and $v -match "^(\d+)\.(\d+)" -and [int]$matches[1] -ge 10) {
-                return $pf
-            }
-        }
-    } catch { }
-
-    # 优先级 3：本地便携 SDK
+    try { $v = & dotnet --version 2>&1; if ($LASTEXITCODE -eq 0 -and $v -match "^(\d+)\.(\d+)" -and [int]$matches[1] -ge 10) { return $sys } } catch { }
+    try { $pf = "$env:ProgramFiles\dotnet\dotnet.exe"; if (Test-Path $pf) { $v = & $pf --version 2>&1; if ($LASTEXITCODE -eq 0 -and $v -match "^(\d+)\.(\d+)" -and [int]$matches[1] -ge 10) { return $pf } } } catch { }
     $local = Join-Path $LocalSdk "dotnet.exe"
     if (Test-Path $local) { return $local }
-
-    return $null   # 所有位置都找不到
+    return $null
 }
 
-# ==================================================================
-#  确保 .NET 10 SDK 可用
-# ==================================================================
-# 调用 Get-DotNetExe 查找 SDK，找到后打印版本信息
-# 找不到则提示用户安装
-function Ensure-DotNet10 {
+function Ensure-DotNet10 {    # 确保 .NET 10 SDK 可用：优先检测系统现有 SDK，没有则自动下载安装到本地 dotnet-sdk 目录
     $dn = Get-DotNetExe
     if ($dn) {
         $ver = & $dn --version 2>&1
@@ -716,34 +373,14 @@ function Ensure-DotNet10 {
     return $null
 }
 
-# ==================================================================
-# ==================================================================
-#  主更新流程（5 个步骤）
-# ==================================================================
-# ==================================================================
-# 以下是脚本的实际执行部分，按照 [1/5] → [2/5] → [3/5] → [4/5] → [5/5] 的顺序执行
-# 每个步骤如果失败，会自动回滚（恢复数据库备份、清理临时文件）
+$buildOk = $false; $gmBuildOk = $false
 
-# 编译状态标志（默认失败，编译成功后设为 $true）
-$buildOk = $false
-$gmBuildOk = $false
-
-# 用 try/catch/finally 包裹整个流程
-#   try:     执行 5 个更新步骤
-#   catch:   发生错误时恢复数据库备份、清理临时文件
-#   finally: 无论成功还是失败，都执行 [5/5] 拉取日志
-try {
-    # ---- 流程初始化 ----
-    # 切换到服务端源码根目录
+try {    # ===== 主更新流程开始：共 5 个步骤 =====
     Set-Location $SrcRoot
-
-    # 记录当前日期时间（用于日志输出）
     $currentDate  = Get-Date -Format "yyyy-MM-dd"
     $currentTime  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $threeDaysAgo = (Get-Date).AddHours(-72)   # 72 小时前 = 3 天
+    $threeDaysAgo = (Get-Date).AddHours(-72)
 
-    # ---- 打印标题 ----
-    # 根据参数显示"增量更新"还是"全量同步"
     $modeText = if ($FullSync) { T "s_full" } else { T "s_inc" }
     Write-Host ""
     Write-Host "========================================"
@@ -751,9 +388,6 @@ try {
     Write-Host "  Date: $currentDate (UTC+8)"
     Write-Host "========================================"
     Write-Host ""
-
-    # ---- 打印重要文件路径提示 ----
-    # 帮助用户确认关键文件位置，避免更新时出问题
     Write-Host "[ $(T 's_warn1') ]"
     Write-Host "$(T 's_warn2')"
     Write-Host "$(T 's_warn3')"
@@ -763,242 +397,149 @@ try {
     Write-Host "========================================"
     Write-Host ""
 
-    # ---- 检查上次更新版本 ----
-    # 从更新日志中提取最近一次更新的日期
     if (Test-Path $LogFile) {
         $raw = [System.IO.File]::ReadAllText($LogFile, $utf8)
-        $rx = [regex]::Matches($raw, "\d{4}-\d{2}-\d{2}")   # 匹配日期格式
+        $rx = [regex]::Matches($raw, "\d{4}-\d{2}-\d{2}")
         if ($rx.Count -gt 0) {
-            $lv = $rx[$rx.Count - 1].Value   # 取最后一个日期
-            if ($lv -eq $currentDate) {
-                Write-Host "Last version: $lv (up-to-date)"   # 今天已经更新过
-            } else {
-                Write-Host "Last version: $lv ($(((Get-Date $currentDate)-(Get-Date $lv)).Days)d ago)"
-            }
+            $lv = $rx[$rx.Count - 1].Value
+            if ($lv -eq $currentDate) { Write-Host "Last version: $lv (up-to-date)" }
+            else { Write-Host "Last version: $lv ($(((Get-Date $currentDate)-(Get-Date $lv)).Days)d ago)" }
         }
-    } else {
-        Write-Host "First run."   # 首次运行，还没有更新日志
-    }
+    } else { Write-Host "First run." }
 
-    # ================================================================
-    #  [1/5] 备份玩家数据库
-    # ================================================================
-    # 这是最重要的一步！更新过程中万一出问题，可以恢复到更新前的状态
     Write-Host ""
-    Write-Host ">>> [1/5] Backing up inventory.db <<<"
-
-    # 检查数据库是否存在
+    Write-Host ">>> [1/5] Backing up inventory.db <<<"    # [1/5] 先备份玩家数据库，防止更新过程中数据丢失
     $dbExisted = Test-Path $DbFile
-    if ($dbExisted) {
-        # 存在 → 复制到 .bak 备份文件
-        Copy-Item $DbFile $DbBackup -Force
-        Write-Host "OK ($((Get-Item $DbFile).Length) bytes)"
-    } else {
-        Write-Host "No inventory.db, skip."   # 还没有数据库（首次安装），跳过
-    }
-    Write-Host "##PROGRESS##5"   # 进度 5%
+    if ($dbExisted) { Copy-Item $DbFile $DbBackup -Force; Write-Host "OK ($((Get-Item $DbFile).Length) bytes)" }
+    else { Write-Host "No inventory.db, skip." }
+    Write-Host "##PROGRESS##5"
 
-    # ================================================================
-    #  [2/5] 下载最新源码
-    # ================================================================
     Write-Host ""
     Write-Host ">>> [2/5] Downloading source <<<"
-
-    # ---- 准备服务端临时目录 ----
-    # 先清空旧的临时目录（防止上次更新残留的文件干扰）
     if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
-    $TempZip = Join-Path $TempDir "main.zip"       # 下载的 ZIP 包
-    $TempExtract = Join-Path $TempDir "extract"     # 解压后的目录
-
-    # 禁止下载进度条（避免在日志中输出大量进度字符）
+    $TempZip = Join-Path $TempDir "main.zip"
+    $TempExtract = Join-Path $TempDir "extract"
     $ProgressPreference = "SilentlyContinue"
 
-    # ---- 准备 GM 工具临时目录 ----
+    # GM 临时目录
     $gmTempDir = Join-Path $env:TEMP "ServerS4A12-gmupdate"
     if (Test-Path $gmTempDir) { Remove-Item -Recurse -Force $gmTempDir }
     New-Item -ItemType Directory -Path $gmTempDir -Force | Out-Null
     $gmTempZip = Join-Path $gmTempDir "main.zip"
     $gmTempExtract = Join-Path $gmTempDir "extract"
-
-    # GM 工具的仓库地址（仍在 Codeberg，无需认证即可下载）
     $gmRepo = "https://codeberg.org/rewio/DfoGmTool"
 
-    # ================================================================
-    #  并行下载：服务端源码 + GM 工具 —— 同时下载，节省时间
-    # ================================================================
-    # 使用 RunspacePool 创建 2 线程的线程池，两个下载同时进行
-    $pool = [RunspaceFactory]::CreateRunspacePool(1, 2)
-    $pool.Open()
+    # 并行下载: 服务端 + GM (5次重试 + 指数退避)
+    $pool = [RunspaceFactory]::CreateRunspacePool(1, 2); $pool.Open()
 
-    # ---- 任务 1：下载服务端源码 ZIP ----
-    $svrPS = [PowerShell]::Create()
-    $svrPS.RunspacePool = $pool
+    $svrPS = [PowerShell]::Create(); $svrPS.RunspacePool = $pool
     [void]$svrPS.AddScript({
         param($u, $t, $tok)
-        # 先删除旧的下载文件
         Remove-Item $t -Force -ErrorAction SilentlyContinue
-        # GitLab API 认证头：PRIVATE-TOKEN（不是 Authorization！）
         $h = @{ "PRIVATE-TOKEN" = $tok }
-        # 最多重试 5 次
         for ($a = 1; $a -le 5; $a++) {
             try {
                 Invoke-WebRequest -Uri $u -OutFile $t -Headers $h -UseBasicParsing -TimeoutSec 60
-                # 检查文件是否有效（大小 > 50KB 才认为成功）
                 if ((Test-Path $t) -and (Get-Item $t).Length -gt 51200) { return $true }
                 Remove-Item $t -Force -ErrorAction SilentlyContinue
-            } catch {
-                # 下载失败，删除不完整的文件
-                Remove-Item $t -Force -ErrorAction SilentlyContinue
-            }
+            } catch { Remove-Item $t -Force -ErrorAction SilentlyContinue }
             if ($a -lt 5) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
         }
         return $false
     })
-    # 传入参数：下载地址、保存路径、API 令牌
-    # GitLab API 归档下载格式：
-    #   /projects/:id/repository/archive.zip?sha=分支名
     [void]$svrPS.AddArgument("https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main")
     [void]$svrPS.AddArgument($TempZip)
     [void]$svrPS.AddArgument($ApiToken)
-    $svrHandle = $svrPS.BeginInvoke()   # 异步启动
+    $svrHandle = $svrPS.BeginInvoke()
 
-    # ---- 任务 2：下载 GM 工具源码 ZIP ----
-    $gmPS = [PowerShell]::Create()
-    $gmPS.RunspacePool = $pool
+    $gmPS = [PowerShell]::Create(); $gmPS.RunspacePool = $pool
     [void]$gmPS.AddScript({
         param($u, $t)
         Remove-Item $t -Force -ErrorAction SilentlyContinue
-        # GM 工具仓库在 Codeberg（公开仓库，无需认证）
         for ($a = 1; $a -le 5; $a++) {
             try {
                 Invoke-WebRequest -Uri $u -OutFile $t -UseBasicParsing -TimeoutSec 60
-                # 检查文件是否有效（GM 工具源码较小，> 10KB 即认为成功）
                 if ((Test-Path $t) -and (Get-Item $t).Length -gt 10240) { return $true }
                 Remove-Item $t -Force -ErrorAction SilentlyContinue
-            } catch {
-                Remove-Item $t -Force -ErrorAction SilentlyContinue
-            }
+            } catch { Remove-Item $t -Force -ErrorAction SilentlyContinue }
             if ($a -lt 5) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
         }
         return $false
     })
-    # 传入参数：Codeberg 的归档下载地址
-    # Codeberg 归档格式：https://域名/用户名/仓库名/archive/分支名.zip
     [void]$gmPS.AddArgument("$gmRepo/archive/main.zip")
     [void]$gmPS.AddArgument($gmTempZip)
-    $gmHandle = $gmPS.BeginInvoke()   # 异步启动
+    $gmHandle = $gmPS.BeginInvoke()
 
-    # ---- 等待两个下载任务完成 ----
-    # 服务端源码下载结果
-    $svrOk = $svrPS.EndInvoke($svrHandle)
-    $svrPS.Dispose()
-    $svrSize = if ($svrOk -and (Test-Path $TempZip)) {
-        "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB"
-    } else { "N/A" }
+    $svrOk = $svrPS.EndInvoke($svrHandle); $svrPS.Dispose()
+    $svrSize = if ($svrOk -and (Test-Path $TempZip)) { "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB" } else { "N/A" }
     Write-Host "Server download: $(if($svrOk){'OK'}else{'FAILED'}) ($svrSize)"
 
-    # GM 工具下载结果
-    $gmOk = $gmPS.EndInvoke($gmHandle)
-    $gmPS.Dispose()
+    $gmOk = $gmPS.EndInvoke($gmHandle); $gmPS.Dispose()
     Write-Host "GM download: $(if($gmOk){'OK'}else{'FAILED'})"
-
     $pool.Close()
-    Write-Host "##PROGRESS##20"   # 进度 20%
+    Write-Host "##PROGRESS##20"
 
-    # ---- 服务端下载失败 → 恢复数据库备份并退出 ----
     if (-not $svrOk) {
         Write-Host "ERROR: Server source download failed."
-        if ($dbExisted) {
-            Copy-Item $DbBackup $DbFile -Force
-            Remove-Item $DbBackup -Force
-        }
-        exit 1   # 退出码 1 = 失败，ServerUI.exe 会检测这个值
+        if ($dbExisted) { Copy-Item $DbBackup $DbFile -Force; Remove-Item $DbBackup -Force }
+        exit 1
     }
 
-    # ================================================================
-    #  解压下载的 ZIP 包
-    # ================================================================
-    # ---- 解压服务端 ----
+    # 解压服务端 + GM
     Write-Host "Extracting..."
-    try {
-        # Expand-Archive: PowerShell 5.0+ 内置的解压命令
-        Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force
-    } catch {
-        Write-Host "ERROR: Server extraction failed: $_"
-        exit 1
-    }
-    # ZIP 解压后通常会在 extract 目录下生成一个子目录
-    # 比如 extract/ServerS4A12-main/，我们需要找到它
+    try { Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force }
+    catch { Write-Host "ERROR: Server extraction failed: $_"; exit 1 }
     $srcDir = Get-ChildItem -Path $TempExtract -Directory | Select-Object -First 1
-    if (-not $srcDir) {
-        Write-Host "ERROR: Server extraction failed."
-        exit 1
-    }
-    $srcPath = $srcDir.FullName   # 源码实际所在的完整路径
+    if (-not $srcDir) { Write-Host "ERROR: Server extraction failed."; exit 1 }
+    $srcPath = $srcDir.FullName
 
-    # ---- 解压 GM 工具（如果下载成功了的话） ----
     if ($gmOk) {
         try {
             Expand-Archive -Path $gmTempZip -DestinationPath $gmTempExtract -Force
             $gmSrcDir = Get-ChildItem -Path $gmTempExtract -Directory | Select-Object -First 1
             if ($gmSrcDir) { $gmSrcPath = $gmSrcDir.FullName }
-        } catch {
-            Write-Host "GM extraction failed: $_"
-            $gmOk = $false   # GM 解压失败不影响服务端更新
-        }
+        } catch { Write-Host "GM extraction failed: $_"; $gmOk = $false }
     }
-    Write-Host "##PROGRESS##30"   # 进度 30%
+    Write-Host "##PROGRESS##30"
 
-    # ================================================================
-    #  [3/5] 同步文件到本地目录
-    # ================================================================
     Write-Host ""
     Write-Host "$(T 's_updating')$modeText) <<<"
-
-    # 根据模式显示不同提示
-    if ($FullSync) {
-        Write-Host (T "s_fullsync")      # "全量同步 (所有文件)..."
-    } else {
-        Write-Host "Incremental mode: archive sync will update only content that changed."
+    try { Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force }
+    catch { Write-Host "ERROR: Extraction failed: $_"; if ($dbExisted) { Copy-Item $DbBackup $DbFile -Force; Remove-Item $DbBackup -Force }; exit 1 }
+    $srcDir = Get-ChildItem -Path $TempExtract -Directory | Select-Object -First 1
+    if (-not $srcDir) {
+        Write-Host "ERROR: Extraction failed."
+        if ($dbExisted) { Copy-Item $DbBackup $DbFile -Force; Remove-Item $DbBackup -Force }
+        exit 1
     }
+    $srcPath = $srcDir.FullName
 
-    # ---- 文件同步：分两种情况 ----
-    # 情况 A：GM 也下载成功了 → 服务端 + GM 并行同步
-    # 情况 B：GM 没下载成功 → 只同步服务端
+    # The archive is the source of truth. Avoid slow compare/commit API calls here;
+    # Sync-SourceFiles performs the three-level file verification below.
+    if ($FullSync) { Write-Host (T "s_fullsync") }
+    else { Write-Host "Incremental mode: archive sync will update only content that changed." }
+
+    # 同步: Server + GM 并行; 无GM时仅 Server
     if ($gmOk -and $gmSrcPath) {
-        # === 情况 A：并行同步 服务端 + GM ===
         $gmDir = Join-Path $ScriptRoot "dfogmtool"
-        if (-not (Test-Path $gmDir)) {
-            New-Item -ItemType Directory -Path $gmDir -Force | Out-Null
-        }
+        if (-not (Test-Path $gmDir)) { New-Item -ItemType Directory -Path $gmDir -Force | Out-Null }
         Write-Host "Parallel sync: server + GM source..."
 
-        # 创建 2 线程的线程池
-        $pool2 = [RunspaceFactory]::CreateRunspacePool(1, 2)
-        $pool2.Open()
+        $pool2 = [RunspaceFactory]::CreateRunspacePool(1, 2); $pool2.Open()
 
-        # ---- 并行任务 1：同步服务端源码 ----
-        $syncSvr = [PowerShell]::Create()
-        $syncSvr.RunspacePool = $pool2
+        $syncSvr = [PowerShell]::Create(); $syncSvr.RunspacePool = $pool2
         [void]$syncSvr.AddScript({
             param($from, $to)
-            $ch = 0   # 变更文件计数
-            $st = 0   # 过期文件删除计数
-
-            # 遍历源目录中的所有文件
+            $ch = 0; $st = 0
             Get-ChildItem $from -File -Recurse | ForEach-Object {
                 $relative = $_.FullName.Substring($from.Length).TrimStart('\')
-                # 过滤不需要同步的文件（和 Sync-SourceFiles 规则相同）
                 if ($relative -match '(^|\\)(\.git|dist)(\\|$)') { return }
                 if ($relative -match '(^|\\)inventory\.db(\.bak)?$') { return }
                 if ($relative -match '(^|\\)start-server\.(bat|sh)$') { return }
-
                 $dst = Join-Path $to $relative
                 $exist = Get-Item $dst -ErrorAction SilentlyContinue
                 if ($exist -and $exist.Length -eq $_.Length -and $exist.LastWriteTimeUtc -eq $_.LastWriteTimeUtc) { return }
-
-                # SHA-256 内容比对
                 $same = $false
                 if ($exist) {
                     $sh = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
@@ -1006,37 +547,28 @@ try {
                     $same = ($sh -eq $dh)
                 }
                 if ($same) { return }
-
-                # 复制并设置时间戳
                 $dir = Split-Path $dst -Parent
                 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
                 Copy-Item $_.FullName $dst -Force
                 [System.IO.File]::SetLastWriteTimeUtc($dst, $_.LastWriteTimeUtc)
                 $ch++
             }
-
-            # 清理过期 .cs 文件
+            # Remove stale
             foreach ($folder in @("Server","Tool")) {
                 $lf = Join-Path $to $folder
                 if (-not (Test-Path $lf)) { continue }
                 Get-ChildItem $lf -File -Recurse -Filter "*.cs" | ForEach-Object {
                     $rel = $_.FullName.Substring($to.Length).TrimStart('\')
                     if ($rel -match '(^|\\)(bin|obj)(\\|$)') { return }
-                    if (-not (Test-Path (Join-Path $from $rel))) {
-                        Remove-Item $_.FullName -Force
-                        $st++
-                    }
+                    if (-not (Test-Path (Join-Path $from $rel))) { Remove-Item $_.FullName -Force; $st++ }
                 }
             }
             return "$ch updated, $st stale removed"
         })
-        [void]$syncSvr.AddArgument($srcPath)
-        [void]$syncSvr.AddArgument($SrcRoot)
+        [void]$syncSvr.AddArgument($srcPath); [void]$syncSvr.AddArgument($SrcRoot)
         $syncSvrHandle = $syncSvr.BeginInvoke()
 
-        # ---- 并行任务 2：同步 GM 工具源码 ----
-        $syncGm = [PowerShell]::Create()
-        $syncGm.RunspacePool = $pool2
+        $syncGm = [PowerShell]::Create(); $syncGm.RunspacePool = $pool2
         [void]$syncGm.AddScript({
             param($from, $to)
             $ch = 0; $st = 0
@@ -1056,105 +588,66 @@ try {
                 [System.IO.File]::SetLastWriteTimeUtc($dst, $_.LastWriteTimeUtc)
                 $ch++
             }
-            # 清理 GM 过期 .cs 文件
             Get-ChildItem $to -File -Recurse -Filter "*.cs" | ForEach-Object {
                 $rel = $_.FullName.Substring($to.Length).TrimStart('\')
                 if ($rel -match '(^|\\)(bin|obj)(\\|$)') { return }
-                if (-not (Test-Path (Join-Path $from $rel))) {
-                    Remove-Item $_.FullName -Force
-                    $st++
-                }
+                if (-not (Test-Path (Join-Path $from $rel))) { Remove-Item $_.FullName -Force; $st++ }
             }
             return "$ch updated, $st stale removed"
         })
-        [void]$syncGm.AddArgument($gmSrcPath)
-        [void]$syncGm.AddArgument($gmDir)
+        [void]$syncGm.AddArgument($gmSrcPath); [void]$syncGm.AddArgument($gmDir)
         $syncGmHandle = $syncGm.BeginInvoke()
 
-        # ---- 等待两个同步任务完成 ----
-        $safetyChanges = $syncSvr.EndInvoke($syncSvrHandle)
-        $syncSvr.Dispose()
+        $safetyChanges = $syncSvr.EndInvoke($syncSvrHandle); $syncSvr.Dispose()
         Write-Host "Server sync: $safetyChanges"
 
-        $gmChanges = $syncGm.EndInvoke($syncGmHandle)
-        $syncGm.Dispose()
+        $gmChanges = $syncGm.EndInvoke($syncGmHandle); $syncGm.Dispose()
         Write-Host "GM sync: $gmChanges"
 
         $pool2.Close()
         Remove-Item -Recurse -Force $gmTempDir -ErrorAction SilentlyContinue
-
     } else {
-        # === 情况 B：只有服务端（GM 没下载/解压成功）===
+        # 单 Server 同步
         $safetyChanges = Sync-SourceFiles $srcPath $SrcRoot
         $staleRemoved = Remove-StaleSourceFiles $srcPath $SrcRoot
         Write-Host "Safety check done: $safetyChanges file(s) updated, $staleRemoved stale removed."
     }
 
-    # ---- 恢复数据库备份 ----
-    # 更新文件后，把备份的 inventory.db 放回原位
-    # 这样确保玩家的存档数据不丢失
     if ($dbExisted) {
-        Copy-Item $DbBackup $DbFile -Force
-        Remove-Item $DbBackup -Force
+        Copy-Item $DbBackup $DbFile -Force; Remove-Item $DbBackup -Force
         Write-Host "inventory.db restored."
     }
-
-    # ---- 清理临时目录 ----
-    # 下载的 ZIP 和解压内容已经不需要了
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-    Write-Host "##PROGRESS##55"   # 进度 55%
+    Write-Host "##PROGRESS##55"
 
-    # ================================================================
-    #  [4/5] 编译服务端和 GM 工具
-    # ================================================================
     Write-Host ""
     Write-Host ">>> [4/5] Building <<<"
-
-    # ---- .NET SDK 检测 ----
     $dn = Ensure-DotNet10
     $buildOk = $false
     $gmBuildOk = $false
 
-    # ---- 备份编译产物中的数据库 ----
-    # dist 目录下的 inventory.db 是编译后的服务端使用的数据库
-    # 编译过程中可能会被覆盖，先备份
     $distDb = Join-Path $SrcRoot "dist\win-x64\Data\inventory.db"
     $distDbBak = Join-Path $SrcRoot "dist\win-x64\Data\inventory.db.tmpbak"
-    if (Test-Path $distDb) {
-        Copy-Item $distDb $distDbBak -Force
-    }
+    if (Test-Path $distDb) { Copy-Item $distDb $distDbBak -Force }
 
     if (-not $dn) {
         Write-Host "Could not obtain .NET SDK. Skipping builds."
     } else {
-        # ---- 确定编译目标 ----
-        # 服务端项目文件
         $serverProject = Join-Path $SrcRoot "Server\DfoServer\DfoServer.csproj"
-        # 编译输出目录（发布到 dist\win-x64）
         $distDir = Join-Path $SrcRoot "dist\win-x64"
         $serverDir = Split-Path $serverProject -Parent
+        if (-not (Test-Path $serverProject)) { throw "Server project not found: $serverProject" }
 
-        if (-not (Test-Path $serverProject)) {
-            throw "Server project not found: $serverProject"
-        }
-
-        # ---- GM 预处理：先停止正在运行的 GM 进程 ----
-        # 如果不停止，编译时可能因为文件被占用而失败
+        # --- GM 预处理 (串行: 停进程) ---
         $gmDir = Join-Path $ScriptRoot "dfogmtool"
         $gmProject = Join-Path $gmDir "DfoGmTool.csproj"
         $gmExePath = Join-Path $gmDir "publish\DfoGmTool.exe"
         if (Test-Path $gmExePath) {
-            try {
-                Get-Process -Name "DfoGmTool" -ErrorAction SilentlyContinue |
-                    Stop-Process -Force -ErrorAction SilentlyContinue
-                Start-Sleep 1   # 等 1 秒确保进程完全退出
-            } catch { }
+            try { Get-Process -Name "DfoGmTool" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep 1 } catch { }
             Write-Host "Stopped existing GM tool process."
         }
 
-        # ---- 全量保存时间戳快照 ----
-        # 编译后所有 C# 文件的时间戳都会变（因为重新生成了）
-        # 保存编译前的时间戳，编译后恢复，防止文件变更检测误报
+        # 全量保存时间戳 (编译后恢复, 防止 C# 文件检测误报编译产物)
         $tsSave = @{}
         @($SrcRoot, $gmDir) | ForEach-Object {
             Get-ChildItem $_ -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1162,109 +655,54 @@ try {
             }
         }
 
-        # ---- 并行编译：服务端 + GM 同时编译 ----
+        # --- 并行编译 (RunspacePool ×2, 严格校验) ---
         Write-Host "Compiling server and GM tool in parallel..."
+
         $pool = [RunspaceFactory]::CreateRunspacePool(1, 2)
         $pool.Open()
 
-        # ============================================================
-        #  编译任务 1：服务端 (DfoServer.exe)
-        # ============================================================
-        $svrPS = [PowerShell]::Create()
-        $svrPS.RunspacePool = $pool
+        # 服务端编译
+        $svrPS = [PowerShell]::Create(); $svrPS.RunspacePool = $pool
         [void]$svrPS.AddScript({
             param($dotnet, $proj, $outDir)
-            # 用 ArrayList 收集编译输出的每一行日志
             $lines = [System.Collections.ArrayList]::new()
-
-            # 辅助函数：写一行日志到数组
             function w($m) { [void]$lines.Add($m) }
-
-            # 辅助函数：运行一个命令并捕获所有输出
-            # $exe:     可执行文件路径
-            # $cmdArgs: 命令行参数数组
-            # 返回:     命令的退出码 (0=成功, 非0=失败)
             function Run-Cmd($exe, $cmdArgs) {
-                # & = 调用操作符，执行命令
-                # 2>&1 = 把标准错误重定向到标准输出（合并输出）
                 $tmp = & $exe @cmdArgs 2>&1
                 $ec = $LASTEXITCODE
-                # Out-String 把输出转成字符串，逐行添加到日志数组
                 $tmp | Out-String | ForEach-Object { w $_.TrimEnd() }
                 return $ec
             }
-
             w "Server build: .NET SDK $(& $dotnet --version)"
-
-            if (-not (Test-Path $proj)) {
-                w "ERROR: project not found: $proj"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
-            # 切换到项目目录（dotnet 命令需要在项目目录下执行）
+            if (-not (Test-Path $proj)) { w "ERROR: project not found: $proj"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $projDir = Split-Path $proj -Parent
             Set-Location $projDir
 
-            # 1. 还原 NuGet 依赖包
-            # --ignore-failed-sources: 忽略不可用的包源（提高成功率）
+            # 还原
             $rc = Run-Cmd $dotnet @("restore", $proj, "--ignore-failed-sources")
-            if ($rc -ne 0) {
-                w "ERROR: restore failed (exit $rc)"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
+            if ($rc -ne 0) { w "ERROR: restore failed (exit $rc)"; return [pscustomobject]@{Ok=$false; Log=$lines} }
 
-            # 2. 编译并发布（第 1 次尝试）
-            # publish 命令参数说明：
-            #   -c Release   : 使用 Release 配置（优化性能）
-            #   -r win-x64    : 目标运行时是 64 位 Windows
-            #   --self-contained true : 自包含发布（打包 .NET 运行时）
-            #   -p:PublishSingleFile=true : 发布为单个 EXE 文件
-            #   -p:IncludeNativeLibrariesForSelfExtract=true : 包含原生库
-            #   -o $outDir    : 输出到指定目录
-            $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64",
-                "--self-contained", "true", "-p:PublishSingleFile=true",
-                "-p:IncludeNativeLibrariesForSelfExtract=true", "-o", $outDir)
-
-            # 3. 如果第 1 次失败，重试一次
+            # 第1次编译
+            $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true", "-o", $outDir)
             if ($rc -ne 0) {
                 w "Retry: rebuilding..."
-                $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64",
-                    "--self-contained", "true", "-p:PublishSingleFile=true",
-                    "-p:IncludeNativeLibrariesForSelfExtract=true", "-o", $outDir)
+                $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true", "-o", $outDir)
             }
 
-            # 4. 校验编译产物
-            if ($rc -ne 0) {
-                w "ERROR: publish failed (exit $rc)"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            # 校验产物
+            if ($rc -ne 0) { w "ERROR: publish failed (exit $rc)"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $exe = Join-Path $outDir "DfoServer.exe"
-            if (-not (Test-Path $exe)) {
-                w "ERROR: DfoServer.exe not found at $exe"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            if (-not (Test-Path $exe)) { w "ERROR: DfoServer.exe not found at $exe"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $size = (Get-Item $exe).Length
-            if ($size -le 0) {
-                w "ERROR: DfoServer.exe is empty"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            if ($size -le 0) { w "ERROR: DfoServer.exe is empty"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             w "OK - DfoServer.exe ($([math]::Round($size/1MB,2)) MB)"
             return [pscustomobject]@{Ok=$true; Log=$lines}
         })
-        # 传入编译参数
-        [void]$svrPS.AddArgument($dn)
-        [void]$svrPS.AddArgument($serverProject)
-        [void]$svrPS.AddArgument($distDir)
+        [void]$svrPS.AddArgument($dn); [void]$svrPS.AddArgument($serverProject); [void]$svrPS.AddArgument($distDir)
         $svrHandle = $svrPS.BeginInvoke()
 
-        # ============================================================
-        #  编译任务 2：GM 工具 (DfoGmTool.exe)
-        # ============================================================
-        $gmPS = [PowerShell]::Create()
-        $gmPS.RunspacePool = $pool
+        # GM 编译
+        $gmPS = [PowerShell]::Create(); $gmPS.RunspacePool = $pool
         [void]$gmPS.AddScript({
             param($dotnet, $proj, $gmDirPath)
             $lines = [System.Collections.ArrayList]::new()
@@ -1275,97 +713,63 @@ try {
                 $tmp | Out-String | ForEach-Object { w $_.TrimEnd() }
                 return $ec
             }
-
             w "GM build: .NET SDK $(& $dotnet --version)"
-
-            if (-not (Test-Path $proj)) {
-                w "GM project not found, skipping."
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            if (-not (Test-Path $proj)) { w "GM project not found, skipping."; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $projDir = Split-Path $proj -Parent
             Set-Location $projDir
 
-            # GM 工具也走同样的流程：restore → publish → 校验
+            # 还原
             $rc = Run-Cmd $dotnet @("restore", $proj, "--ignore-failed-sources")
-            if ($rc -ne 0) {
-                w "WARNING: GM restore failed (exit $rc)"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
+            if ($rc -ne 0) { w "WARNING: GM restore failed (exit $rc)"; return [pscustomobject]@{Ok=$false; Log=$lines} }
 
+            # 编译
             $pubDir = Join-Path $gmDirPath "publish"
-            $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64",
-                "--self-contained", "true", "-o", $pubDir)
+            $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-o", $pubDir)
             if ($rc -ne 0) {
                 w "Retry: rebuilding..."
-                $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64",
-                    "--self-contained", "true", "-o", $pubDir)
+                $rc = Run-Cmd $dotnet @("publish", $proj, "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-o", $pubDir)
             }
 
-            if ($rc -ne 0) {
-                w "WARNING: GM publish failed (exit $rc)"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            # 校验产物
+            if ($rc -ne 0) { w "WARNING: GM publish failed (exit $rc)"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $exe = Join-Path $pubDir "DfoGmTool.exe"
-            if (-not (Test-Path $exe)) {
-                w "WARNING: DfoGmTool.exe not found"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            if (-not (Test-Path $exe)) { w "WARNING: DfoGmTool.exe not found"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             $size = (Get-Item $exe).Length
-            if ($size -le 0) {
-                w "WARNING: DfoGmTool.exe is empty"
-                return [pscustomobject]@{Ok=$false; Log=$lines}
-            }
-
+            if ($size -le 0) { w "WARNING: DfoGmTool.exe is empty"; return [pscustomobject]@{Ok=$false; Log=$lines} }
             w "OK - DfoGmTool.exe ($([math]::Round($size/1MB,2)) MB)"
             return [pscustomobject]@{Ok=$true; Log=$lines}
         })
-        [void]$gmPS.AddArgument($dn)
-        [void]$gmPS.AddArgument($gmProject)
-        [void]$gmPS.AddArgument($gmDir)
+        [void]$gmPS.AddArgument($dn); [void]$gmPS.AddArgument($gmProject); [void]$gmPS.AddArgument($gmDir)
         $gmHandle = $gmPS.BeginInvoke()
 
-        # ---- 等待服务端编译完成（先完成先处理） ----
-        $svrResult = $svrPS.EndInvoke($svrHandle)
-        $svrPS.Dispose()
-        # 输出服务端编译日志（-join "`n" 把数组用换行符连接成一个字符串）
+        # 等待服务端先完成
+        $svrResult = $svrPS.EndInvoke($svrHandle); $svrPS.Dispose()
         Write-Host ($svrResult.Log -join "`n")
         $buildOk = $svrResult.Ok
 
-        # ---- 等待 GM 编译完成 ----
-        $gmResult = $gmPS.EndInvoke($gmHandle)
-        $gmPS.Dispose()
+        # 等待 GM
+        $gmResult = $gmPS.EndInvoke($gmHandle); $gmPS.Dispose()
         Write-Host ($gmResult.Log -join "`n")
         $gmBuildOk = $gmResult.Ok
 
         $pool.Close()
     }
 
-    # ---- 恢复时间戳快照 ----
-    # 编译过程中很多文件的修改时间被改变了，恢复成编译前的时间
-    # 这样下次更新时不会误报这些文件被修改过
+    # 恢复时间戳 (防止 C# 文件变更检测误报编译产物)
     foreach ($path in $tsSave.Keys) {
         if (Test-Path $path) {
-            try {
-                [System.IO.File]::SetLastWriteTimeUtc($path, $tsSave[$path])
-            } catch { }
+            try { [System.IO.File]::SetLastWriteTimeUtc($path, $tsSave[$path]) } catch { }
         }
     }
 
-    # ---- 恢复 dist 目录的数据库 ----
+    # 恢复 dist DB + 补充检查 (串行)
     if (Test-Path $distDbBak) {
-        Copy-Item $distDbBak $distDb -Force
-        Remove-Item $distDbBak -Force
+        Copy-Item $distDbBak $distDb -Force; Remove-Item $distDbBak -Force
         Write-Host "Restored dist inventory.db"
     }
-
-    # ---- 补充检查：确保关键配置文件存在 ----
-    # 有时候新下载的代码可能缺少这些文件，从源代码目录复制过去
     $checkFiles = @(
         @{src="Server\DfoServer\Sqlite\item_schema.sql"; dst="dist\win-x64\Sqlite\item_schema.sql"},
-        @{src="Server\DfoServer\channel_info.etc";       dst="dist\win-x64\channel_info.etc"}
+        @{src="Server\DfoServer\channel_info.etc"; dst="dist\win-x64\channel_info.etc"}
     )
     foreach ($cf in $checkFiles) {
         $dp = Join-Path $SrcRoot $cf.dst
@@ -1373,140 +777,85 @@ try {
             $sp = Join-Path $SrcRoot $cf.src
             if (Test-Path $sp) {
                 $dd = Split-Path $dp -Parent
-                if (-not (Test-Path $dd)) {
-                    New-Item -ItemType Directory -Path $dd -Force | Out-Null
-                }
+                if (-not (Test-Path $dd)) { New-Item -ItemType Directory -Path $dd -Force | Out-Null }
                 Copy-Item $sp $dp -Force
                 Write-Host "Fixed: copied $($cf.dst) from source"
             }
         }
     }
 
-    # ---- 编译失败 → 报错退出 ----
     if (-not $buildOk) {
         Write-Host "ERROR: Update files were synchronized but the server build did not succeed."
         exit 1
     }
-    Write-Host "##PROGRESS##85"   # 进度 85%
+    Write-Host "##PROGRESS##85"
 
 } catch {
-    # ================================================================
-    #  错误处理：恢复备份 + 清理临时文件
-    # ================================================================
     Write-Host "ERROR: $_"
-    # 恢复数据库备份
-    if (Test-Path $DbBackup) {
-        Copy-Item $DbBackup $DbFile -Force -ErrorAction SilentlyContinue
-        Remove-Item $DbBackup -Force
-    }
-    # 清理临时目录
-    if (Test-Path $TempDir) {
-        Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-    }
+    if (Test-Path $DbBackup) { Copy-Item $DbBackup $DbFile -Force -ErrorAction SilentlyContinue; Remove-Item $DbBackup -Force }
+    if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue }
     exit 1
-
 } finally {
-    # ================================================================
-    #  [5/5] 拉取提交日志
-    # ================================================================
-    # 无论前面步骤是否成功，都会执行这一步
-    # （finally 块在 try/catch 之后总是执行）
     Write-Host ""
-
     if ($SkipCommitLog) {
-        # 用户在 GUI 中勾选了"跳过更新日志"复选框
         Write-Host ">>> [5/5] 【已跳过更新日志拉取 — 由用户设置】 <<<"
     } else {
         Write-Host ">>> [5/5] 【正在获取仓库更新日志中，速度较慢，请等待】 <<<"
     }
-
-    # 确保这些变量有值（防止 finally 在 try 块执行前就触发）
     if (-not $currentDate)  { $currentDate  = Get-Date -Format "yyyy-MM-dd" }
     if (-not $currentTime)  { $currentTime  = Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
     if (-not $modeText)     { $modeText     = if ($FullSync) { T "s_full" } else { T "s_inc" } }
 
-    # ---- 拉取并组织提交日志 ----
-    $allGrouped = @{}   # 按日期分组的 commit：{ "2026-07-20" → ["消息1","消息2",...] }
-
+    $allGrouped = @{}
     if (-not $SkipCommitLog) {
-        # --- 方案 A：优化方案（带缓存 + 并行拉取） ---
         $history = Sync-CommitHistory
         foreach ($c in @($history.Commits)) {
             try {
-                # 转换 UTC 时间到北京时间
                 $d = ToChinaDate $c.Date
-                # 只取 commit 消息的第一行（标题）
                 $message = "$($c.Message)".Split("`n")[0].Trim()
-                # 消息太长会破坏日志格式，截断到 120 字符
-                if ($message.Length -gt 120) {
-                    $message = $message.Substring(0, 117) + "..."
-                }
+                if ($message.Length -gt 120) { $message = $message.Substring(0,117)+"..." }
                 if (-not $allGrouped.Contains($d)) { $allGrouped[$d] = @() }
                 $allGrouped[$d] += $message
             } catch { }
         }
 
-        # --- 方案 B：兜底方案（传统逐页拉取） ---
-        # 如果优化方案没拉到任何数据（0 条），启动旧版可靠方式
-        if ($allGrouped.Count -eq 0) {
-            Write-Host "[提交日志] 优化方案无数据，切换旧版可靠方案 (直接 API 全量拉取)..."
-            try {
-                $page = 1
-                $perPage = 50
-                # 从 3 年前开始拉取
-                $fbSince = (Get-Date).AddYears(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
-
-                # 逐页循环拉取
-                while ($true) {
-                    $resp = $null
-                    # 每页最多重试 10 次
-                    for ($a = 1; $a -le 10; $a++) {
-                        try {
-                            $resp = Invoke-WebRequest -Uri "$RepoApi/repository/commits?ref_name=main&per_page=$perPage&page=$page&since=$fbSince" -Headers $ApiHeaders -UseBasicParsing -TimeoutSec 15
-                            break
-                        } catch {
-                            if ($a -lt 10) { Start-Sleep 1 }
-                        }
-                    }
-                    if (-not $resp) {
-                        throw "兜底拉取第${page}页失败 (10次重试后)"
-                    }
-
-                    # 解析 JSON 响应
-                    $list = $utf8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
-                    if ($list.Count -eq 0) { break }   # 没有更多数据了
-
-                    foreach ($c in $list) {
-                        # GitLab API 返回字段（与之前 Gitea/Codeberg 不同！）
-                        #   committed_date → commit 时间
-                        #   title          → commit 标题
-                        $cd = "$($c.committed_date)"
-                        $msg = "$($c.title)"
-                        $d = ToChinaDate $cd
-                        $t = $msg.Split("`n")[0].Trim()
-                        if ($t.Length -gt 120) { $t = $t.Substring(0,117) + "..." }
-                        if (-not $allGrouped.Contains($d)) { $allGrouped[$d] = @() }
-                        $allGrouped[$d] += $t
-                    }
-
-                    if ($list.Count -lt $perPage) { break }   # 最后一页
-                    $page++
+    # 严谨判定: 优化方案确实失败 (0 条数据) → 启动旧版纯直连方案
+    if ($allGrouped.Count -eq 0) {
+        Write-Host "[提交日志] 优化方案无数据，切换旧版可靠方案 (直接 API 全量拉取)..."
+        try {
+            $page = 1; $perPage = 50; $fbSince = (Get-Date).AddYears(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
+            while ($true) {
+                $resp = $null
+                for ($a = 1; $a -le 10; $a++) {
+                    try {
+                        $resp = Invoke-WebRequest -Uri "$RepoApi/repository/commits?ref_name=main&per_page=$perPage&page=$page&since=$fbSince" -Headers $ApiHeaders -UseBasicParsing -TimeoutSec 15
+                        break
+                    } catch { if ($a -lt 10) { Start-Sleep 1 } }
                 }
-            } catch {
-                Write-Host "[提交日志] 旧版方案也失败: $_"
+                if (-not $resp) { throw "兜底拉取第${page}页失败 (10次重试后)" }
+                $list = $utf8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json
+                if ($list.Count -eq 0) { break }
+                foreach ($c in $list) {
+                    $cd = "$($c.committed_date)"; $msg = "$($c.title)"
+                    $d = ToChinaDate $cd
+                    $t = $msg.Split("`n")[0].Trim()
+                    if ($t.Length -gt 120) { $t = $t.Substring(0,117)+"..." }
+                    if (-not $allGrouped.Contains($d)) { $allGrouped[$d] = @() }
+                    $allGrouped[$d] += $t
+                }
+                if ($list.Count -lt $perPage) { break }
+                $page++
             }
+        } catch {
+            Write-Host "[提交日志] 旧版方案也失败: $_"
         }
     }
+    }
 
-    # ---- 按日期排序 ----
-    # $sortedDates: 降序（最新的在前面，用于写入日志文件）
-    # $sortedDatesAsc: 升序（最旧的在前面，用于控制台输出）
     $sortedDates = $allGrouped.Keys | Sort-Object -Descending
     $sortedDatesAsc = $allGrouped.Keys | Sort-Object
-    $totalCommits = 0
-    foreach ($d in $sortedDates) { $totalCommits += $allGrouped[$d].Count }
+    $totalCommits = 0; foreach ($d in $sortedDates) { $totalCommits += $allGrouped[$d].Count }
 
-    # ---- 打印完成信息 ----
     Write-Host ""
     Write-Host "========================================"
     Write-Host "$(T 's_done')$modeText"
@@ -1516,15 +865,7 @@ try {
     Write-Host "========================================"
     Write-Host ""
 
-    # ================================================================
-    #  写入更新日志文件 (更新日志.txt)
-    # ================================================================
-    $ver = T "s_ver"      # "版本:"
-    $up = T "s_up"        # "更新时间:"
-    $total = T "s_total"   # "统计提交:"
-    $hist = T "s_hist"    # "更新历史 (从最初到现在，北京时间 UTC+8):"
-
-    # 用 ArrayList 逐行构建日志内容
+    $ver = T "s_ver"; $up = T "s_up"; $total = T "s_total"; $hist = T "s_hist"
     $logLines = [System.Collections.ArrayList]::new()
     [void]$logLines.Add("========================================")
     [void]$logLines.Add($ver + $currentDate)
@@ -1536,11 +877,7 @@ try {
     $gbs = if ($gmBuildOk) { "OK" } else { "Skipped" }
     [void]$logLines.Add("GM Tool Build: " + $gbs)
     [void]$logLines.Add("========================================")
-    [void]$logLines.Add("")
-    [void]$logLines.Add($hist)
-    [void]$logLines.Add("")
-
-    # 按日期分组输出 commit 记录
+    [void]$logLines.Add(""); [void]$logLines.Add($hist); [void]$logLines.Add("")
     foreach ($d in $sortedDates) {
         [void]$logLines.Add("--- $d ($($allGrouped[$d].Count) commits) ---")
         foreach ($m in $allGrouped[$d]) {
@@ -1552,18 +889,13 @@ try {
     [void]$logLines.Add("========================================")
     [void]$logLines.Add("")
 
-    # 写入文件（UTF-8 with BOM，确保记事本能正确识别中文）
     $logText = ($logLines -join "`r`n") + "`r`n"
     [System.IO.File]::WriteAllText($LogFile, $logText, (New-Object System.Text.UTF8Encoding $true))
     Write-Host "[提交日志] 已输出 更新日志.txt ($totalCommits 条提交)"
 
-    # ================================================================
-    #  控制台输出最近的更新记录（最近 7 天）
-    # ================================================================
-    $sda = (Get-Date).AddDays(-7).ToString("yyyy-MM-dd")   # 7 天前
-
+    $sda = (Get-Date).AddDays(-7).ToString("yyyy-MM-dd")
     foreach ($d in $sortedDatesAsc) {
-        if ($d -lt $sda) { continue }   # 超过 7 天的不在控制台显示
+        if ($d -lt $sda) { continue }
         Write-Host "--- $d ($($allGrouped[$d].Count) commits) ---"
         foreach ($m in $allGrouped[$d]) {
             $tt = if ($m.Length -gt 120) { $m.Substring(0,117)+"..." } else { $m }
@@ -1571,34 +903,9 @@ try {
         }
         Write-Host ""
     }
-
-    # 如果有超过 7 天的记录，提示用户去查看完整日志文件
     if (($sortedDatesAsc | Where-Object { $_ -lt $sda })) {
         Write-Host "---"
         Write-Host ((T "s_more") + (T "fn_log"))
         Write-Host ((T "s_repo") + "https://gitgud.io/rewio/86JP/-/commits/main")
     }
 }
-
-# ==================================================================
-#  脚本结束
-#
-# 【常见问题排查】
-#   Q: 下载失败（ERROR: Server source download failed）
-#   A: 1. 检查网络是否能访问 gitgud.io
-#      2. 检查 API 令牌是否过期
-#      3. 尝试开启 VPN/科学上网
-#
-#   Q: 编译失败（ERROR: publish failed）
-#   A: 1. 检查是否安装了 .NET 10 SDK（cmd 运行 dotnet --version）
-#      2. 确保 ServerS4A12-AUM\Server\DfoServer\DfoServer.csproj 存在
-#
-#   Q: 日志拉取很慢/失败
-#   A: 1. 可以勾选 GUI 中的"跳过更新日志"来跳过这一步
-#      2. 不影响实际的代码更新功能
-#
-#   Q: 玩家数据丢失了
-#   A: 检查 ServerS4A12-AUM\Server\DfoServer\Data\inventory.db
-#      看看有没有 inventory.db.bak 备份文件
-#      如果有，可以手动改名恢复
-# ==================================================================
