@@ -79,6 +79,12 @@ $ApiToken = $utf8.GetString([Convert]::FromBase64String($utf8.GetString([Convert
 # 旧的 Codeberg 使用的是 "Authorization: token xxx"，两者不同！
 $ApiHeaders = @{ "PRIVATE-TOKEN" = $ApiToken }
 
+# ---- 本地兜底缓存目录 ----
+# 如果所有在线下载均失败，从本地 latest 目录读取压缩包
+$LatestDir = Join-Path $ScriptRoot "latest"
+$LatestSvr = Join-Path $LatestDir "ServerS4A12-latest.zip"
+$LatestGM  = Join-Path $LatestDir "DfoGmTool-latest.zip"
+
 # ==================================================================
 #  base64 编码的中文字符串字典
 # ==================================================================
@@ -894,30 +900,111 @@ try {
     $gmHandle = $gmPS.BeginInvoke()   # 异步启动
 
     # ---- 等待两个下载任务完成 ----
-    # 服务端源码下载结果
-    $svrOk = $svrPS.EndInvoke($svrHandle)
-    $svrPS.Dispose()
-    $svrSize = if ($svrOk -and (Test-Path $TempZip)) {
-        "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB"
-    } else { "N/A" }
+    $svrOk = $svrPS.EndInvoke($svrHandle); $svrPS.Dispose()
+    $svrSize = if ($svrOk -and (Test-Path $TempZip)) { "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB" } else { "N/A" }
     Write-Host "Server download: $(if($svrOk){'OK'}else{'FAILED'}) ($svrSize)"
 
+    # 服务器下载后 ZIP 完整性验证
+    if ($svrOk) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+            if ($testZip.Entries.Count -eq 0) { throw "ZIP empty" }
+            $testZip.Dispose()
+            Write-Host "Server ZIP 验证通过 ($($testZip.Entries.Count) 条目)"
+        } catch {
+            Write-Host "Server ZIP 损坏: $_"
+            $svrOk = $false
+            Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # GM 工具下载结果
-    $gmOk = $gmPS.EndInvoke($gmHandle)
-    $gmPS.Dispose()
+    $gmOk = $gmPS.EndInvoke($gmHandle); $gmPS.Dispose()
     Write-Host "GM download: $(if($gmOk){'OK'}else{'FAILED'})"
+    if ($gmOk) {
+        try {
+            $testZip = [System.IO.Compression.ZipFile]::OpenRead($gmTempZip)
+            if ($testZip.Entries.Count -gt 0) { $testZip.Dispose(); Write-Host "GM ZIP 验证通过" } else { $testZip.Dispose(); throw "empty" }
+        } catch { Write-Host "GM ZIP 损坏: $_"; $gmOk = $false }
+    }
+
+    # GM 镜像回退
+    if (-not $gmOk) {
+        Write-Host "GM 下载失败，尝试镜像源..."
+        foreach ($gmUrl in @("https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/mirrors/DfoGmTool-latest.zip","https://raw.githubusercontent.com/118coder/ServerUI-AUM-S4A12/main/dfogmtool.zip")) {
+            try {
+                Remove-Item $gmTempZip -Force -ErrorAction SilentlyContinue
+                Invoke-WebRequest -Uri $gmUrl -OutFile $gmTempZip -UseBasicParsing -TimeoutSec 60
+                $testZip = [System.IO.Compression.ZipFile]::OpenRead($gmTempZip)
+                if ($testZip.Entries.Count -gt 0) { $gmOk = $true; $testZip.Dispose(); break }
+                $testZip.Dispose()
+            } catch { }
+        }
+        # 本地 GM 兜底
+        if (-not $gmOk -and (Test-Path $LatestGM)) {
+            Write-Host "  所有在线GM源失败，用本地缓存: $LatestGM"
+            Copy-Item $LatestGM $gmTempZip -Force
+            try { $tz=[System.IO.Compression.ZipFile]::OpenRead($gmTempZip); if ($tz.Entries.Count -gt 0) { $gmOk = $true }; $tz.Dispose() } catch { }
+        }
+    }
 
     $pool.Close()
-    Write-Host "##PROGRESS##20"   # 进度 20%
+    Write-Host "##PROGRESS##20"
 
-    # ---- 服务端下载失败 → 恢复数据库备份并退出 ----
+    # ---- GitHub 镜像 latest.json 可用于后续回退 ----
+    $mirrorOk = $false
     if (-not $svrOk) {
-        Write-Host "ERROR: Server source download failed."
-        if ($dbExisted) {
-            Copy-Item $DbBackup $DbFile -Force
-            Remove-Item $DbBackup -Force
+        Write-Host "主源失败/损坏，尝试镜像..."
+        $metaUrls = @(
+            "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/latest.json",
+            "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main/latest.json"
+        )
+        foreach ($mu in $metaUrls) {
+            try {
+                $mr = Invoke-WebRequest -Uri $mu -UseBasicParsing -TimeoutSec 10
+                $meta = $mr.Content | ConvertFrom-Json
+                $pkg = $meta.package; if (-not $pkg) { continue }
+                $dl = $mu -replace '/latest\.json$','' + "/mirrors/$pkg.zip"
+                Write-Host "  镜像下载: $dl"
+                Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+                Invoke-WebRequest -Uri $dl -OutFile $TempZip -UseBasicParsing -TimeoutSec 60
+                $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+                if ($testZip.Entries.Count -gt 0) {
+                    $svrOk = $true; $mirrorOk = $true; $testZip.Dispose()
+                    Write-Host "  镜像下载成功! ($($testZip.Entries.Count) 条目)"
+                    break
+                }
+                $testZip.Dispose()
+            } catch { Write-Host "  镜像尝试失败: $_" }
         }
-        exit 1   # 退出码 1 = 失败，ServerUI.exe 会检测这个值
+    }
+
+    # 在线兜底: latest.zip 直链
+    if (-not $svrOk) {
+        Write-Host "  智能镜像失败，尝试直链 latest.zip..."
+        foreach ($fb in @("https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/mirrors/ServerS4A12-latest.zip","https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main/mirrors/ServerS4A12-latest.zip")) {
+            try {
+                Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+                Invoke-WebRequest -Uri $fb -OutFile $TempZip -UseBasicParsing -TimeoutSec 60
+                $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+                if ($testZip.Entries.Count -gt 0) { $svrOk = $true; $testZip.Dispose(); break }
+                $testZip.Dispose()
+            } catch { }
+        }
+    }
+
+    # 终极兜底: 本地 latest/
+    if (-not $svrOk -and (Test-Path $LatestSvr)) {
+        Write-Host "  所有在线源失败，用本地缓存: $LatestSvr"
+        Copy-Item $LatestSvr $TempZip -Force
+        try { $tz=[System.IO.Compression.ZipFile]::OpenRead($TempZip); if ($tz.Entries.Count -gt 0) { $svrOk = $true }; $tz.Dispose() } catch { }
+    }
+
+    if (-not $svrOk) {
+        Write-Host "ERROR: Server source download failed (all sources)."
+        if ($dbExisted) { Copy-Item $DbBackup $DbFile -Force; Remove-Item $DbBackup -Force }
+        exit 1
     }
 
     # ================================================================
@@ -926,6 +1013,20 @@ try {
     # ---- 解压服务端 ----
     Write-Host "Extracting..."
     try {
+        # ZIP 完整性预检：确保文件不是损坏的
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        try {
+            $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+            if ($testZip.Entries.Count -eq 0) { throw "ZIP empty" }
+            $testZip.Dispose()
+        } catch {
+            Write-Host "ERROR: Server ZIP corrupted during download. Deleting and retrying..."
+            Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+            # 尝试镜像回退（如果还没试过）
+            if (-not $svrOk) { throw "All download sources produced corrupted ZIP." }
+            throw "ZIP integrity check failed: $_"
+        }
+
         # Expand-Archive: PowerShell 5.0+ 内置的解压命令
         Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force
     } catch {
@@ -944,6 +1045,11 @@ try {
     # ---- 解压 GM 工具（如果下载成功了的话） ----
     if ($gmOk) {
         try {
+            # GM ZIP 完整性预检
+            $testGmZip = [System.IO.Compression.ZipFile]::OpenRead($gmTempZip)
+            if ($testGmZip.Entries.Count -eq 0) { throw "GM ZIP empty" }
+            $testGmZip.Dispose()
+
             Expand-Archive -Path $gmTempZip -DestinationPath $gmTempExtract -Force
             $gmSrcDir = Get-ChildItem -Path $gmTempExtract -Directory | Select-Object -First 1
             if ($gmSrcDir) { $gmSrcPath = $gmSrcDir.FullName }
