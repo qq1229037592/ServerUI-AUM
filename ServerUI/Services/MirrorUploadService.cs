@@ -241,6 +241,17 @@ public class MirrorUploadService
             var zipSize = zip.Length;
             OutputReceived?.Invoke($"[镜像] 下载完成, 大小:{zipSize / 1024}KB, SHA:{sha[..8]}...");
 
+            // 2.1 保存到本地 latest 缓存目录
+            try
+            {
+                var latestDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AUM管理组件", "latest");
+                if (!Directory.Exists(latestDir)) Directory.CreateDirectory(latestDir);
+                var svrPath = Path.Combine(latestDir, "ServerS4A12-latest.zip");
+                File.WriteAllBytes(svrPath, zip);
+                OutputReceived?.Invoke("[镜像] 已更新本地缓存 ServerS4A12-latest.zip");
+            }
+            catch { }
+
             // === 去重层1: SHA 精确匹配 ===
             var (hasMeta, oldSha, oldVer, oldTime) = await FetchMirrorMetadata();
             if (hasMeta && oldSha == sha)
@@ -291,33 +302,47 @@ public class MirrorUploadService
 
             try
             {
-                // 4. 上传到 GitHub
+                // 4. 上传到 GitHub Release
                 OutputReceived?.Invoke("[镜像] 上传到 GitHub...");
                 var ghOk = await UploadToGitHub(zip, pkgName, sha);
-                OutputReceived?.Invoke($"[镜像] GitHub: {(ghOk ? "OK" : "失败")}");
+                OutputReceived?.Invoke($"[镜像] GitHub Release: {(ghOk ? "OK" : "失败")}");
+
+                // 4.5 上传到 GitHub 仓库文件 (为 raw 下载提供)
+                var ghRawOk = await UploadToGitHubRaw(zip, pkgName);
+                OutputReceived?.Invoke($"[镜像] GitHub Raw: {(ghRawOk ? "OK" : "失败")}");
 
                 // 5. 上传到 Codeberg
                 OutputReceived?.Invoke("[镜像] 上传到 Codeberg...");
                 var cbOk = await UploadToCodeberg(zip, pkgName, sha);
                 OutputReceived?.Invoke($"[镜像] Codeberg: {(cbOk ? "OK" : "失败")}");
 
-                // 6. 上传更新日志 (4层去重: SHA/时间/锁/重检, 跳过版本)
+                // 6. 上传更新日志 + latest副本
                 if (ghOk || cbOk)
                 {
                     OutputReceived?.Invoke("[镜像] 上传更新日志...");
                     await UploadChangelog();
+                    OutputReceived?.Invoke("[镜像] 上传 latest 副本...");
+                    await UploadLatestCopy(zip);
+
+                    // 6.5 同步 GM 工具源码到镜像
+                    OutputReceived?.Invoke("[镜像] 同步 GM 工具源码...");
+                    await MirrorGMTool(sha[..8]);
                 }
 
                 // 7. 更新版本元数据
                 if (ghOk || cbOk)
                 {
+                    var ghDownloadUrl = $"https://raw.githubusercontent.com/{GitHubRepo}/main/mirrors/{pkgName}.zip";
+                    var cbDownloadUrl = $"https://codeberg.org/{CodebergRepo}/raw/branch/main/mirrors/{pkgName}.zip";
                     var meta = JsonSerializer.Serialize(new
                     {
                         version = pkgName,
                         package = pkgName,
                         release_date = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
                         sha256 = sha,
-                        size_bytes = zipSize
+                        size_bytes = zipSize,
+                        download_github = ghDownloadUrl,
+                        download_codeberg = cbDownloadUrl
                     });
 
                     await UpdateGitHubFile("latest.json", meta, $"镜像更新 {pkgName}");
@@ -392,6 +417,119 @@ public class MirrorUploadService
             return total;
         }
         catch { return 0; }
+    }
+
+    async Task MirrorGMTool(string shaPrefix)
+    {
+        try
+        {
+            var gmUrls = new[] {
+                "https://codeberg.org/rewio/DfoGmTool/archive/main.zip"
+            };
+            byte[] gmZip = null;
+            foreach (var url in gmUrls)
+            {
+                try
+                {
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                    client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-Mirror/1.0");
+                    gmZip = await client.GetByteArrayAsync(url);
+                    if (gmZip.Length > 10240) break;
+                }
+                catch { }
+            }
+
+            if (gmZip == null || gmZip.Length < 10240)
+            {
+                OutputReceived?.Invoke("[镜像] GM下载失败，跳过。");
+                return;
+            }
+
+            var gmSha = Convert.ToHexString(SHA256.HashData(gmZip)).ToLower();
+            OutputReceived?.Invoke($"[镜像] GM: {gmZip.Length/1024}KB, SHA:{gmSha[..8]}...");
+
+            // 保存到本地缓存
+            try
+            {
+                var latestDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AUM管理组件", "latest");
+                if (!Directory.Exists(latestDir)) Directory.CreateDirectory(latestDir);
+                File.WriteAllBytes(Path.Combine(latestDir, "DfoGmTool-latest.zip"), gmZip);
+            }
+            catch { }
+
+            // SHA 去重
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get,
+                    $"https://api.github.com/repos/{GitHubRepo}/contents/mirrors/DfoGmTool-latest.zip?ref=main");
+                req.Headers.Add("Authorization", "token " + GitHubToken);
+                var resp = await _http.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var json = await resp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("content", out var c))
+                    {
+                        var oldBytes = Convert.FromBase64String(c.GetString() ?? "");
+                        var oldSha = Convert.ToHexString(SHA256.HashData(oldBytes)).ToLower();
+                        if (oldSha == gmSha)
+                        {
+                            OutputReceived?.Invoke("[镜像] GM SHA相同 → 跳过。");
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 上传到 GitHub + Codeberg (latest + dated)
+            var gmPkg = "DfoGmTool-" + DateTime.Now.ToString("yyyyMMdd") + "-" + shaPrefix;
+            var ghOk = await UploadToGitHubRaw(gmZip, gmPkg);
+            var cbOk = await UploadToCodeberg(gmZip, gmPkg, gmSha);
+            if (ghOk || cbOk)
+            {
+                await UploadToGitHubRaw(gmZip, "DfoGmTool-latest");
+                var cbB64 = Convert.ToBase64String(gmZip);
+                var cbBody = JsonSerializer.Serialize(new { message = "GM latest", content = cbB64, branch = "main" });
+                var cbUrl = $"https://codeberg.org/api/v1/repos/{CodebergRepo}/contents/mirrors/DfoGmTool-latest.zip";
+                await TryPutFileWithRetry(cbUrl, cbBody, CodebergToken, "token ");
+            }
+            OutputReceived?.Invoke($"[镜像] GM镜像: {(ghOk || cbOk ? "OK" : "FAIL")}");
+        }
+        catch (Exception ex)
+        {
+            OutputReceived?.Invoke($"[镜像] GM异常: {ex.Message}");
+        }
+    }
+
+    async Task UploadLatestCopy(byte[] zip)
+    {
+        try
+        {
+            var b64 = Convert.ToBase64String(zip);
+            var fileName = "ServerS4A12-latest.zip";
+
+            // GitHub
+            try
+            {
+                var body = JsonSerializer.Serialize(new { message = "更新 latest", content = b64, branch = "main" });
+                var url = $"https://api.github.com/repos/{GitHubRepo}/contents/mirrors/{fileName}";
+                await TryPutFileWithRetry(url, body, GitHubToken, "token ");
+            }
+            catch { }
+
+            // Codeberg
+            try
+            {
+                var body = JsonSerializer.Serialize(new { message = "更新 latest", content = b64, branch = "main" });
+                var url = $"https://codeberg.org/api/v1/repos/{CodebergRepo}/contents/mirrors/{fileName}";
+                await TryPutFileWithRetry(url, body, CodebergToken, "token ");
+            }
+            catch { }
+
+            OutputReceived?.Invoke("[镜像] latest 副本已更新");
+        }
+        catch { }
     }
 
     async Task UploadChangelog()
@@ -641,6 +779,18 @@ public class MirrorUploadService
             OutputReceived?.Invoke($"[镜像] GitHub上传异常: {ex.Message}");
             return false;
         }
+    }
+
+    async Task<bool> UploadToGitHubRaw(byte[] zip, string pkgName)
+    {
+        try
+        {
+            var b64 = Convert.ToBase64String(zip);
+            var body = JsonSerializer.Serialize(new { message = $"镜像 {pkgName}", content = b64, branch = "main" });
+            var url = $"https://api.github.com/repos/{GitHubRepo}/contents/mirrors/{pkgName}.zip";
+            return await TryPutFileWithRetry(url, body, GitHubToken, "token ");
+        }
+        catch { return false; }
     }
 
     async Task<bool> UploadToCodeberg(byte[] zip, string pkgName, string sha)

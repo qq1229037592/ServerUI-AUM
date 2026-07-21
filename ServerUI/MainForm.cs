@@ -1405,18 +1405,22 @@ public partial class MainForm : Form
 
     void CleanUpdateTemp()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), "ServerS4A12-update");
+        var pattern = "ServerS4A12-*";
         try
         {
-            if (Directory.Exists(tempDir))
+            foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), pattern))
             {
-                Directory.Delete(tempDir, true);
-                Lg(">>> 已清理更新临时目录", Gn);
+                try { Directory.Delete(dir, true); } catch { }
             }
+            foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), "ServerUI-AUM-update*"))
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
+            Lg(">>> 已清理更新缓存目录", Gn);
         }
         catch (Exception ex)
         {
-            Lg(">>> 清理更新临时目录失败: " + ex.Message, Or);
+            Lg(">>> 清理更新缓存失败: " + ex.Message, Or);
         }
     }
 
@@ -1762,6 +1766,7 @@ public partial class MainForm : Form
         LS(msg);
         RA();
         TB();
+        if (cbCl != null && cbCl.Checked) CleanRedundantDb();
 
         if (wasRunning)
         {
