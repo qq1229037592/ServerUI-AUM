@@ -279,6 +279,9 @@ public class SelfUpdateService
             // R7.5 编译成功后，同步源码到本地（异步，不影响替换流程）
             try { SyncDirectory(srcDir, localDir); CleanDuplicates(localDir); SyncRootFiles(rootDir, Path.GetDirectoryName(localDir) ?? localDir); } catch { }
 
+            // R7.6 下载镜像中的更新日志（不编译，直接拉取）
+            try { await DownloadChangelogFromMirror(Path.GetDirectoryName(localDir) ?? localDir); } catch { }
+
             // R8 生成替换脚本并退出
             // 用临时 PowerShell 脚本实现: 等旧进程退出 → 覆盖 EXE → 启动 → 自清理
             OutputReceived?.Invoke("[AUM更新] 编译成功，正在准备替换...");
@@ -403,6 +406,36 @@ public class SelfUpdateService
 
         await p.WaitForExitAsync();
         return p.ExitCode;
+    }
+
+    static async Task DownloadChangelogFromMirror(string destDir)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+
+            var urls = new[] {
+                "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main/mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt",
+                "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt"
+            };
+
+            foreach (var url in urls)
+            {
+                try
+                {
+                    var data = await client.GetByteArrayAsync(url);
+                    if (data.Length > 100)
+                    {
+                        var dest = Path.Combine(destDir, "更新日志.txt");
+                        File.WriteAllBytes(dest, data);
+                        return;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     static void SyncRootFiles(string repoRoot, string userRoot)

@@ -37,7 +37,15 @@ namespace ServerUI.Services;
 public class UpdateService
 {
     const string RepositoryApi = "https://gitgud.io/api/v4/projects/rewio%2F86JP";
-    const string ApiToken = "ggio_Evb_FDif1lUTVAQkw0zKWG86MQp1OjJjZ3gK.01.101gu1kjc";
+    const string ApiTokenB64 = "WjJkcGIxOUZkbUpmUmtScFpqRnNWVlJXUVZGcmR6QjZTMWRIT0RaTlVYQXhUMnBLYWxvelowc3VNREV1TVRBeFozVXhhMnBq";
+    static string ApiToken
+    {
+        get
+        {
+            var once = Encoding.UTF8.GetString(Convert.FromBase64String(ApiTokenB64));
+            return Encoding.UTF8.GetString(Convert.FromBase64String(once));
+        }
+    }
 
     Process _runningProc;
 

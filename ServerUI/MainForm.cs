@@ -167,6 +167,7 @@ public partial class MainForm : Form
     bool _cdBusy;                         // DX 复选框互斥处理中的互斥锁
     bool _orphanLogged;                   // 孤儿进程告警只触发一次 (避免日志刷屏)
     bool _hasSdk;                         // .NET 10 SDK 是否可用 (影响自更新功能)
+    bool _mirrorOk;                       // 镜像上传令牌是否有效
     readonly StringBuilder _logBuilder = new();  // 累积全部运行日志，用于退出时生成文件
 
 
@@ -222,7 +223,7 @@ public partial class MainForm : Form
         EnableDoubleBuffer(this);
 
         // Keep text at its designed DPI-aware size. Shrinking it during resize caused clipped labels.
-        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); await CheckAUMUpdate(); };
+        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); await CheckAUMUpdate(); _ = ValidateMirrorTokens(); };
     }
 
     // =================================================================
@@ -2295,7 +2296,12 @@ public partial class MainForm : Form
 
     async System.Threading.Tasks.Task TryMirrorUpload()
     {
-        // 后台线程独立运行，不阻塞界面加载
+        if (!_mirrorOk)
+        {
+            Lg("[镜像] API令牌无法生效，请更新AUM版本。", Rd);
+            return;
+        }
+
         await System.Threading.Tasks.Task.Delay(5000);
         if (await _mu.CanReachGitGud())
         {
@@ -2314,6 +2320,24 @@ public partial class MainForm : Form
         else
         {
             Lg("[镜像] 无法访问 GitGud，跳过镜像上传。", Txt2);
+        }
+    }
+
+    async System.Threading.Tasks.Task ValidateMirrorTokens()
+    {
+        try
+        {
+            var ok = await _mu.ValidateTokensAsync();
+            _mirrorOk = ok;
+            if (!ok)
+                Lg("[令牌检测] API令牌无法生效，请更新AUM版本。已禁用镜像上传。", Rd);
+            else
+                Lg("[令牌检测] API令牌正常，众包镜像可用。", Txt2);
+        }
+        catch
+        {
+            _mirrorOk = false;
+            Lg("[令牌检测] API令牌无法生效，请更新AUM版本。", Rd);
         }
     }
 
