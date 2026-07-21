@@ -1,0 +1,419 @@
+/*
+ * ==================================================================
+ * AUM管理器自更新服务 (SelfUpdateService) — v1.9
+ * ==================================================================
+ *
+ * 【功能说明】
+ *   检测 GitHub 仓库中是否有新版本，有则下载源码 → 本地编译 → 替换 EXE。
+ *   整个自更新过程完全自动化，利用用户已有的 .NET 10 SDK 编译。
+ *
+ * 【工作流程】
+ *   1. 读取 GitHub Raw 上的 MainForm.cs，正则提取 VER 版本号
+ *   2. 对比本地 VER，相同则跳过，不同则进入更新
+ *   3. 下载 GitHub 仓库 ZIP → 解压到临时目录
+ *   4. 找 ServerUI 子目录 → dotnet restore → dotnet publish
+ *   5. 编译成功后生成替换脚本 → 退出旧进程 → 脚本覆盖 EXE → 启动新 EXE
+ *
+ * 【多轮判定 / 任何一步失败均可安全回滚】
+ *   R1-R3: 网络/ZIP 异常 → 重试，不碰本地文件
+ *   R4-R7: 编译相关 → 旧 EXE 持续运行，不影响用户
+ *   R8:    替换 EXE → 临时脚本保证原子操作
+ * ==================================================================
+ */
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+
+namespace ServerUI.Services;
+
+public class SelfUpdateService
+{
+    const string GitHubRaw = "https://raw.githubusercontent.com/118coder/ServerUI-AUM-S4A12/main/";
+    const string GitHubApi = "https://api.github.com/repos/118coder/ServerUI-AUM-S4A12/contents/";
+    const string RepoZipUrl = "https://api.github.com/repos/118coder/ServerUI-AUM-S4A12/zipball/main";
+    const string VerFile = "AUM-version.txt";
+
+    public string RemoteVersion { get; private set; }
+
+    public event Action<string> OutputReceived;
+    public event Action<bool> Completed;
+
+    public async Task<bool> CheckForUpdateAsync(string localVer)
+    {
+        try
+        {
+            var ver = await FetchRemoteVersion();
+            if (ver == null)
+            {
+                RemoteVersion = null;
+                OutputReceived?.Invoke("[AUM自检] 无法连接 GitHub，跳过版本检测");
+                return false;
+            }
+
+            RemoteVersion = ver;
+            var cmp = CompareVersion(ver, localVer);
+            return cmp > 0;
+        }
+        catch
+        {
+            RemoteVersion = null;
+            return false;
+        }
+    }
+
+    async Task<string> FetchRemoteVersion()
+    {
+        var rawTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        // 第1层: 尝试 GitHub API（刷新最快，无CDN缓存）
+        for (int a = 1; a <= 2; a++)
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
+                client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+                client.DefaultRequestHeaders.Add("Cache-Control", "no-cache, no-store");
+                client.DefaultRequestHeaders.Add("Pragma", "no-cache");
+
+                var resp = await client.GetStringAsync(GitHubApi + VerFile + "?ref=main&t=" + rawTimestamp);
+                using var doc = JsonDocument.Parse(resp);
+                if (doc.RootElement.TryGetProperty("content", out var contentEl))
+                {
+                    var bytes = Convert.FromBase64String(contentEl.GetString() ?? "");
+                    var text = Encoding.UTF8.GetString(bytes).Trim();
+                    text = Regex.Replace(text, @"\s+", "");
+                    if (text.Length > 0) return text;
+                }
+            }
+            catch
+            {
+                if (a < 2) await Task.Delay(500);
+            }
+        }
+
+        // 第2层: 回退到 Raw URL（带多重缓存穿透参数）
+        for (int a = 1; a <= 2; a++)
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
+                client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+                client.DefaultRequestHeaders.Add("Cache-Control", "no-cache, no-store, must-revalidate");
+                client.DefaultRequestHeaders.Add("Pragma", "no-cache");
+
+                var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var url = GitHubRaw + VerFile + "?r=" + ts + "&_=" + Guid.NewGuid().ToString("N")[..8];
+                var text = await client.GetStringAsync(url);
+                text = text.Trim();
+                text = Regex.Replace(text, @"\s+", "");
+                if (text.Length > 0) return text;
+            }
+            catch
+            {
+                if (a < 2) await Task.Delay(500);
+            }
+        }
+
+        return null;
+    }
+
+    public int CompareVersion(string a, string b)
+    {
+        var partsA = ParseVersion(a);
+        var partsB = ParseVersion(b);
+        int len = Math.Max(partsA.Length, partsB.Length);
+        for (int i = 0; i < len; i++)
+        {
+            int va = i < partsA.Length ? partsA[i] : 0;
+            int vb = i < partsB.Length ? partsB[i] : 0;
+            if (va != vb) return va.CompareTo(vb);
+        }
+        return 0;
+    }
+
+    static int[] ParseVersion(string v)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return new[] { 0 };
+        var s = v.Trim();
+        var parts = s.Split('.', '-', '_');
+        var nums = new System.Collections.Generic.List<int>();
+        foreach (var p in parts)
+        {
+            var cleaned = System.Text.RegularExpressions.Regex.Replace(p, @"[^0-9]", "");
+            if (int.TryParse(cleaned, out var n) && n >= 0)
+                nums.Add(n);
+            else if (cleaned.Length > 0)
+                nums.Add(0);
+        }
+        if (nums.Count == 0) nums.Add(0);
+        return nums.ToArray();
+    }
+
+    public async Task RunUpdateAsync(string localDir)
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), "ServerUI-AUM-update");
+        var tmpZip = Path.Combine(tmpDir, "source.zip");
+        var tmpExtract = Path.Combine(tmpDir, "extract");
+        var publishDir = Path.Combine(tmpDir, "publish");
+        var curExe = Environment.ProcessPath ?? "";
+
+        try
+        {
+            // R1 准备临时目录
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+            Directory.CreateDirectory(tmpDir);
+            Directory.CreateDirectory(publishDir);
+
+            // R2 下载源码 ZIP (5次重试)
+            OutputReceived?.Invoke("[AUM更新] 正在下载最新源码...");
+            var ok = false;
+            for (int a = 1; a <= 5; a++)
+            {
+                try
+                {
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                    client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+                    var data = await client.GetByteArrayAsync(RepoZipUrl);
+                    await File.WriteAllBytesAsync(tmpZip, data);
+
+                    if (new FileInfo(tmpZip).Length > 10240) { ok = true; break; }
+                }
+                catch { }
+                if (a < 5) await Task.Delay((int)Math.Pow(2, a) * 1000);
+            }
+
+            if (!ok)
+            {
+                OutputReceived?.Invoke("[AUM更新] 下载源码失败，请检查网络。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            // R3 解压
+            OutputReceived?.Invoke("[AUM更新] 正在解压源码...");
+            if (Directory.Exists(tmpExtract)) Directory.Delete(tmpExtract, true);
+            ZipFile.ExtractToDirectory(tmpZip, tmpExtract);
+
+            // GitHub zipball 解压后有个子目录 (如 118coder-ServerUI-AUM-S4A12-xxxxx)
+            var rootDir = tmpExtract;
+            var subDir = Directory.GetDirectories(tmpExtract).FirstOrDefault(
+                d => d.Contains("ServerUI") || d.Contains("S4A12")) ?? tmpExtract;
+            rootDir = subDir;
+
+            // 找 ServerUI 源码目录
+            var srcDir = Path.Combine(rootDir, "ServerUI");
+            if (!Directory.Exists(srcDir))
+            {
+                var dirs = Directory.GetDirectories(rootDir, "ServerUI", SearchOption.AllDirectories);
+                if (dirs.Length > 0) srcDir = dirs[0];
+            }
+
+            if (!Directory.Exists(srcDir) || !File.Exists(Path.Combine(srcDir, "ServerUI.csproj")))
+            {
+                OutputReceived?.Invoke("[AUM更新] 源码包结构异常，请手动更新。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            // R4 文件同步: 覆盖本地源码
+            OutputReceived?.Invoke("[AUM更新] 正在同步源码文件...");
+            SyncDirectory(srcDir, localDir);
+
+            // R4.5 清理重复文件: GitHub 仓库可能存在根目录和子目录同名文件
+            CleanDuplicates(localDir);
+
+            // R5 dotnet restore
+            OutputReceived?.Invoke("[AUM更新] 正在还原依赖...");
+            var sdk = FindDotNet();
+            if (sdk == null)
+            {
+                OutputReceived?.Invoke("[AUM更新] 未找到 .NET 10 SDK，无法编译。请安装SDK后重试。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            var exit = await RunDotnet(sdk, $"restore \"{Path.Combine(localDir, "ServerUI.csproj")}\" --ignore-failed-sources", localDir);
+            if (exit != 0)
+            {
+                OutputReceived?.Invoke("[AUM更新] 依赖还原失败 (exit " + exit + ")。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            // R6 dotnet publish (无依赖版)
+            OutputReceived?.Invoke("[AUM更新] 正在编译新版本...");
+            var csproj = Path.Combine(localDir, "ServerUI.csproj");
+            var fdExePath = Path.Combine(publishDir, "ServerUI.exe");
+            exit = await RunDotnet(sdk,
+                $"publish \"{csproj}\" -c Release -r win-x64 --no-self-contained -o \"{publishDir}\"",
+                localDir);
+
+            if (exit != 0)
+            {
+                OutputReceived?.Invoke("[AUM更新] 编译失败 (exit " + exit + ")。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            if (!File.Exists(fdExePath))
+            {
+                OutputReceived?.Invoke("[AUM更新] 编译产物缺失，请检查源码。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            // R7 验证新 EXE 大小
+            var newSize = new FileInfo(fdExePath).Length;
+            if (newSize < 10240)
+            {
+                OutputReceived?.Invoke("[AUM更新] 编译产物异常 (仅 " + newSize + " 字节)。");
+                Completed?.Invoke(false);
+                return;
+            }
+
+            // R8 生成替换脚本并退出
+            // 用临时 PowerShell 脚本实现: 等旧进程退出 → 覆盖 EXE → 启动 → 自清理
+            OutputReceived?.Invoke("[AUM更新] 编译成功，正在准备替换...");
+            var psPath = Path.Combine(tmpDir, "replace.ps1");
+            var psScript = new StringBuilder();
+            psScript.AppendLine("$oldPid = " + Environment.ProcessId + ";");
+            psScript.AppendLine("$newExe = @\"\n" + fdExePath + "\n\"@;");
+            psScript.AppendLine("$target = @\"\n" + curExe + "\n\"@;");
+            psScript.AppendLine("$tmpDir = @\"\n" + tmpDir + "\n\"@;");
+            psScript.AppendLine("Start-Sleep -Seconds 2;");
+            psScript.AppendLine("# 等待旧进程完全退出 (最多等 30 秒)");
+            psScript.AppendLine("for ($i = 0; $i -lt 30; $i++) {");
+            psScript.AppendLine("    $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue;");
+            psScript.AppendLine("    if (-not $p) { break };");
+            psScript.AppendLine("    Start-Sleep -Seconds 1;");
+            psScript.AppendLine("}");
+            psScript.AppendLine("# 覆盖旧 EXE");
+            psScript.AppendLine("try {");
+            psScript.AppendLine("    Copy-Item -LiteralPath $newExe -Destination $target -Force;");
+            psScript.AppendLine("    Write-Host '替换成功';");
+            psScript.AppendLine("    Start-Process -FilePath $target;");
+            psScript.AppendLine("} catch {");
+            psScript.AppendLine("    Write-Host \"替换失败: $_\";");
+            psScript.AppendLine("    Start-Sleep -Seconds 10;");
+            psScript.AppendLine("}");
+            psScript.AppendLine("# 清理临时目录");
+            psScript.AppendLine("Start-Sleep -Seconds 2;");
+            psScript.AppendLine("Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue;");
+            File.WriteAllText(psPath, psScript.ToString(), Encoding.UTF8);
+
+            OutputReceived?.Invoke("[AUM更新] 即将退出并完成替换...");
+            OutputReceived?.Invoke("[AUM更新] 当前程序: " + curExe + "  →  将被新版本覆盖");
+            Completed?.Invoke(true);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + psPath + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            OutputReceived?.Invoke("[AUM更新] 异常: " + ex.Message);
+            Completed?.Invoke(false);
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, true); }
+            catch { }
+        }
+    }
+
+    static string FindDotNet()
+    {
+        try
+        {
+            var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = "--version",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            });
+            var v = p.StandardOutput.ReadToEnd().Trim();
+            p.WaitForExit();
+            var m = Regex.Match(v, @"^(\d+)\.");
+            if (p.ExitCode == 0 && m.Success && int.Parse(m.Groups[1].Value) >= 10)
+                return "dotnet";
+        }
+        catch { }
+
+        var pf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
+        if (File.Exists(pf)) return pf;
+
+        return null;
+    }
+
+    static async Task<int> RunDotnet(string sdk, string args, string workDir)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = sdk,
+            Arguments = args,
+            WorkingDirectory = workDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        psi.Environment["DOTNET_EnableCET"] = "0";
+
+        using var p = new Process { StartInfo = psi };
+        p.Start();
+        await p.WaitForExitAsync();
+        return p.ExitCode;
+    }
+
+    static void CleanDuplicates(string dir)
+    {
+        var subDirs = new[] { "Services", "Models" };
+        foreach (var sub in subDirs)
+        {
+            var subPath = Path.Combine(dir, sub);
+            if (!Directory.Exists(subPath)) continue;
+            foreach (var f in Directory.GetFiles(subPath, "*.cs"))
+            {
+                var name = Path.GetFileName(f);
+                var rootPath = Path.Combine(dir, name);
+                if (File.Exists(rootPath))
+                {
+                    File.Delete(rootPath);
+                }
+            }
+        }
+    }
+
+    static void SyncDirectory(string src, string dst)
+    {
+        foreach (var f in Directory.GetFiles(src, "*", SearchOption.AllDirectories))
+        {
+            var rel = f.Substring(src.Length).TrimStart(Path.DirectorySeparatorChar);
+            if (rel.StartsWith("bin" + Path.DirectorySeparatorChar) ||
+                rel.StartsWith("obj" + Path.DirectorySeparatorChar))
+                continue;
+            var target = Path.Combine(dst, rel);
+            var td = Path.GetDirectoryName(target);
+            if (!Directory.Exists(td))
+                Directory.CreateDirectory(td!);
+            File.Copy(f, target, true);
+        }
+    }
+}

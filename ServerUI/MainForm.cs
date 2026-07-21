@@ -1,6 +1,6 @@
 /*
  * ==================================================================
-     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.86-7
+     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.9
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.86-7】仓库迁移至 gitgud.io，更新API连接
-    const string VER = "1.86-7";
+    // 【v1.9】新增AUM管理器自更新功能，接入GitHub版本检测
+    const string VER = "1.9";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -129,6 +129,7 @@ public partial class MainForm : Form
     readonly ServerService  _sv = new();  // 服务端进程管理
     readonly ArchiveService _ar = new();  // 存档文件管理
     readonly UpdateService  _up = new();  // 更新脚本调用
+    readonly SelfUpdateService _au = new(); // AUM管理器自更新
 
     // ===== UI 控件字段 =====
     // 命名规则: lb=Label, bt=Button, cb=CheckBox, lv=ListView, rt=RichTextBox
@@ -136,6 +137,8 @@ public partial class MainForm : Form
     Label lbSt, lbVe, lbPv, lbLu, lbCu, lbBk, lbDr, lbSd;
     // 主要按钮 (开始/停止/重启/增量/全量)
     Button btPlay, btStop, btRe, btIn, btFu, btVL, btPv;
+    // 顶栏按钮 (更新AUM)
+    Button btAu;
     // 存档管理按钮 (7 个)
     Button btOD, btOB, btMD, btSC, btIm, btEx, btUd;
     // 日志工具栏按钮 (复制/清空) + 顶部安装 SDK 按钮 + GM 工具按钮
@@ -162,6 +165,7 @@ public partial class MainForm : Form
     bool _sa = true;                      // 排序方向: true=正序, false=倒序
     bool _cdBusy;                         // DX 复选框互斥处理中的互斥锁
     bool _orphanLogged;                   // 孤儿进程告警只触发一次 (避免日志刷屏)
+    bool _hasSdk;                         // .NET 10 SDK 是否可用 (影响自更新功能)
     readonly StringBuilder _logBuilder = new();  // 累积全部运行日志，用于退出时生成文件
 
 
@@ -217,7 +221,7 @@ public partial class MainForm : Form
         EnableDoubleBuffer(this);
 
         // Keep text at its designed DPI-aware size. Shrinking it during resize caused clipped labels.
-        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); };
+        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); await CheckAUMUpdate(); };
     }
 
     // =================================================================
@@ -436,21 +440,22 @@ public partial class MainForm : Form
 
         // ============================================================
         // ★ r0 顶栏 ★ — 显示运行状态、版本信息、.NET SDK 状态
-        // 4 列: 运行状态 | 版本信息 | .NET SDK 状态 | 安装SDK按钮
-        // v1.85-1 优化: 使用更柔和的背景色，增加圆角视觉效果
+        // 5 列: 运行状态 | 版本信息 | .NET SDK 状态 | 更新AUM | 安装SDK
+        // v1.86-7: 新增【更新AUM】按钮
         // ============================================================
         var r0 = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4, RowCount = 1,
+            ColumnCount = 5, RowCount = 1,
             BackColor = Card,
             Padding = new Padding(16, 5, 16, 5),
             Margin = new Padding(5, 0, 5, 7)
         };
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
-        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32F));
         r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15F));
+        r0.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15F));
 
         lbSt = L("[O] 未运行", Rd);
         lbSt.Font = new Font(lbSt.Font, FontStyle.Bold);
@@ -459,7 +464,7 @@ public partial class MainForm : Form
         lbSd.TextAlign = ContentAlignment.MiddleRight;
 
         // 安装 SDK 按钮 — 仅在检测到没有 .NET SDK 时才需要点击
-        btSdk = B("安装SDK", Or, 7);
+        btSdk = B("安装NET.10 SDK", Or, 7);
         btSdk.Dock = DockStyle.Fill;
         btSdk.Click += async (s, e) =>
         {
@@ -467,10 +472,20 @@ public partial class MainForm : Form
             await IS();
         };
 
+        // 更新AUM 按钮 — 检测并安装 AUM 管理器自身的新版本
+        btAu = B("更新AUM", Rd, 7);
+        btAu.Dock = DockStyle.Fill;
+        btAu.Click += async (s, e) =>
+        {
+            Lg(">>> 正在检测 AUM 管理器更新...", Color.CornflowerBlue);
+            await CheckAndUpdateAUM();
+        };
+
         r0.Controls.Add(lbSt, 0, 0);
         r0.Controls.Add(lbVe, 1, 0);
         r0.Controls.Add(lbSd, 2, 0);
-        r0.Controls.Add(btSdk, 3, 0);
+        r0.Controls.Add(btAu, 3, 0);
+        r0.Controls.Add(btSdk, 4, 0);
         root.Controls.Add(r0, 0, 0);
 
         // ============================================================
@@ -1961,6 +1976,7 @@ public partial class MainForm : Form
         lbSd.ForeColor = c;
 
         // 输出检测结果到日志
+        _hasSdk = sysOk || pfOk || localOk;
         if (sysOk || pfOk)
             Lg("检测到系统已安装 .NET 10 SDK，可用于编译服务端更新",
                 Gn);
@@ -2201,6 +2217,79 @@ public partial class MainForm : Form
         Lg("[网络降级] 仓库" + reason
             + "。将自动重试并改用源码包同步；建议开启科学上网（梯子）提高成功率。", Or);
         return true;
+    }
+
+    async System.Threading.Tasks.Task CheckAUMUpdate()
+    {
+        Lg(">>> 正在检测 AUM 管理器更新...", Color.CornflowerBlue);
+        _au.OutputReceived += Lg;
+        try
+        {
+            var hasUpdate = await _au.CheckForUpdateAsync(VER);
+            if (_au.RemoteVersion == null)
+            {
+                // 网络失败，OutputReceived 已经输出了日志
+            }
+            else if (hasUpdate)
+            {
+                Lg("[AUM自检] 发现新版本 v" + _au.RemoteVersion + "！当前版本 v" + VER + "，请点击顶栏【更新AUM】升级。", Gn);
+            }
+            else if (_au.CompareVersion(_au.RemoteVersion, VER) < 0)
+            {
+                Lg("[AUM自检] 当前为开发版 v" + VER + "（高于仓库 v" + _au.RemoteVersion + "），无需更新。", Txt2);
+            }
+            else
+            {
+                Lg("[AUM自检] 已是最新版本 v" + VER, Txt2);
+            }
+        }
+        finally { _au.OutputReceived -= Lg; }
+    }
+
+    async System.Threading.Tasks.Task CheckAndUpdateAUM()
+    {
+        if (!_hasSdk)
+        {
+            Lg("[AUM更新] 需要 .NET 10 SDK 才能自更新，请先点击【安装NET.10 SDK】安装。", Rd);
+            return;
+        }
+
+        Lg(">>> 正在连接 GitHub 检测 AUM 管理器更新...", Color.CornflowerBlue);
+        var hasUpdate = await _au.CheckForUpdateAsync(VER);
+
+        if (!hasUpdate)
+        {
+            if (_au.RemoteVersion != null)
+            {
+                if (_au.CompareVersion(_au.RemoteVersion, VER) < 0)
+                    Lg("[AUM更新] 当前已是开发版 v" + VER + "，无需降级。", Txt2);
+                else
+                    Lg("[AUM更新] 已是最新版本 v" + VER, Gn);
+            }
+            return;
+        }
+
+        Lg("[AUM更新] 发现新版本 v" + _au.RemoteVersion + "，当前 v" + VER, Gn);
+        Lg("[AUM更新] 开始自动下载源码并编译...", Color.CornflowerBlue);
+
+        _au.OutputReceived += Lg;
+        _au.Completed += (ok) =>
+        {
+            if (ok) Lg("[AUM更新] 编译成功，即将自动重启...", Gn);
+            else Lg("[AUM更新] 更新流程中断，可稍后重试。", Or);
+        };
+
+        try
+        {
+            await _au.RunUpdateAsync(Path.Combine(_bd,
+                Directory.Exists(Path.Combine(_bd, "ServerUI"))
+                    ? "ServerUI"
+                    : "."));
+        }
+        finally
+        {
+            _au.OutputReceived -= Lg;
+        }
     }
 
     // =================================================================
