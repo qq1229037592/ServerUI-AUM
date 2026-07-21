@@ -66,6 +66,9 @@ $RepoApi = "https://gitgud.io/api/v4/projects/rewio%2F86JP"
 # UTF-8 编码器，用于正确处理中文字符
 $utf8 = [System.Text.Encoding]::UTF8
 
+# 预加载 ZIP 处理程序集（后续校验多处使用，提前加载避免运行时找不到类型）
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+
 # API 访问令牌 — 双重 base64 编码存放（防 GitHub 安全扫描，运行时自动解码）
 # 如需更换令牌，先用 PowerShell 生成双重编码:
 #   $raw = "新令牌"
@@ -84,6 +87,34 @@ $ApiHeaders = @{ "PRIVATE-TOKEN" = $ApiToken }
 $LatestDir = Join-Path $ScriptRoot "latest"
 $LatestSvr = Join-Path $LatestDir "ServerS4A12-latest.zip"
 $LatestGM  = Join-Path $LatestDir "DfoGmTool-latest.zip"
+
+# ==================================================================
+#  镜像下载源配置（v1.911：GitGud 不可达时自动切换的备选方案）
+# ==================================================================
+# 以下 URL 用于当 GitGud 不可达时，直接从 GitHub/Codeberg 下载已缓存的服务端包。
+# 优先使用 GitHub（国内访问质量相对较好），Codeberg 作为备选。
+# 所有 URL 均为公共 raw 直链（无需 API 认证），避免频率限制。
+$MirrorGitHubRaw  = "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main"
+$MirrorCodebergRaw = "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main"
+# 对应网页地址（供用户手动验证）
+$MirrorGitHubPage  = "https://github.com/118coder/ServerS4A12.86JP"
+$MirrorCodebergPage = "https://codeberg.org/118coder/ServerS4A12.86JP"
+
+# 服务端 latest.zip 直链（GitHub 优先 → Codeberg）
+$MirrorServerUrls = @(
+    "$MirrorGitHubRaw/mirrors/ServerS4A12-latest.zip",
+    "$MirrorCodebergRaw/mirrors/ServerS4A12-latest.zip"
+)
+# GM 工具 mirror 下载（GitHub 优先 → Codeberg）
+$MirrorGMUrls = @(
+    "https://raw.githubusercontent.com/118coder/ServerUI-AUM-S4A12/main/dfogmtool.zip",
+    "$MirrorCodebergRaw/mirrors/DfoGmTool-latest.zip"
+)
+# latest.json 元数据下载（GitHub 优先 → Codeberg）
+$MirrorMetaUrls = @(
+    "$MirrorGitHubRaw/latest.json",
+    "$MirrorCodebergRaw/latest.json"
+)
 
 # ==================================================================
 #  base64 编码的中文字符串字典
@@ -223,6 +254,65 @@ function Invoke-RepositoryRequest($uri, [int]$MaxAttempts = 2, [int]$TimeoutSec 
     }
     Write-Host "WARNING: API unavailable after $MaxAttempts attempts. Falling back to archive-only update."
     return $null   # 所有重试都失败，返回空
+}
+
+# ---- 下载源可达性快速检测 (v1.911) ----
+# 在执行下载前快速检测各源是否可达（GET 请求，6秒超时，单次尝试）
+# 注意: 非 2xx HTTP 响应（如 401/302 说明服务器可达，只有超时/DNS 失败才算不可达
+# 按延迟分级: ≤800ms 正常 / ≤3000ms 较慢 / >3000ms 极慢 / 无响应 不可达
+# 返回: @{ GitGud=$bool; GitHub=$bool; Codeberg=$bool }
+function Test-SourceAvailability {
+    $results = @{ GitGud = $false; GitHub = $false; Codeberg = $false }
+    $latency = @{ GitGud = 0; GitHub = 0; Codeberg = 0 }
+    
+    Write-Host "[连接检测] 正在快速检测下载源可达性..."
+    
+    # 测试 GitGud（主源，中国大陆常被阻断）
+    # 使用首页 URL（与 C# 启动检测一致），非 API 端点
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        Invoke-WebRequest -Uri "https://gitgud.io" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $sw.Stop(); $latency.GitGud = $sw.ElapsedMilliseconds
+        $results.GitGud = $true
+    } catch {
+        $sw.Stop(); $latency.GitGud = $sw.ElapsedMilliseconds
+        if ($_.Exception.Response -ne $null) { $results.GitGud = $true }  # HTTP响应说明可达
+    }
+    
+    # 测试 GitHub（镜像源，使用首页 URL 与 C# 一致）
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        Invoke-WebRequest -Uri "https://github.com" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $sw.Stop(); $latency.GitHub = $sw.ElapsedMilliseconds
+        $results.GitHub = $true
+    } catch {
+        $sw.Stop(); $latency.GitHub = $sw.ElapsedMilliseconds
+        if ($_.Exception.Response -ne $null) { $results.GitHub = $true }
+    }
+    
+    # 测试 Codeberg（镜像备选源，使用首页 URL 与 C# 一致）
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        Invoke-WebRequest -Uri "https://codeberg.org" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $sw.Stop(); $latency.Codeberg = $sw.ElapsedMilliseconds
+        $results.Codeberg = $true
+    } catch {
+        $sw.Stop(); $latency.Codeberg = $sw.ElapsedMilliseconds
+        if ($_.Exception.Response -ne $null) { $results.Codeberg = $true }
+    }
+    
+    # 按延迟分级输出（与 C# 侧 CheckBasicNetwork 保持一致）
+    function LatencyLabel($name, $reachable, $ms) {
+        if (-not $reachable) { return "$name 不可达 (超时)" }
+        if ($ms -le 800)    { return "$name 正常 (延迟 ${ms}ms)" }
+        if ($ms -le 3000)   { return "$name 较慢 (延迟 ${ms}ms), 建议开启科学上网" }
+        return "$name 极慢 (延迟 ${ms}ms), 更新可能失败"
+    }
+    Write-Host ("[连接检测] " + (LatencyLabel 'GitGud' $results.GitGud $latency.GitGud))
+    Write-Host ("[连接检测] " + (LatencyLabel 'GitHub' $results.GitHub $latency.GitHub))
+    Write-Host ("[连接检测] " + (LatencyLabel 'Codeberg' $results.Codeberg $latency.Codeberg))
+    
+    return $results
 }
 
 # ---- 提交缓存：读取 ----
@@ -490,7 +580,6 @@ function Sync-CommitHistory {
 # 防止下载了损坏的 ZIP 包导致后续解压失败
 function Test-ZipFile($path) {
     try {
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
         $valid = $zip.Entries.Count -gt 0   # 至少有一个文件才算有效
         $zip.Dispose()
@@ -835,6 +924,52 @@ try {
     $gmRepo = "https://codeberg.org/rewio/DfoGmTool"
 
     # ================================================================
+    #  连接预检：快速测试下载源可达性 (v1.911)
+    # ================================================================
+    # 在中国大陆网络环境下 GitGud 常被阻断，预检可避免浪费数分钟等待时间
+    Write-Host ""
+    
+    # 清理 DNS/网络缓存，确保使用最新解析（避免 CDN 旧缓存导致误判）
+    try { ipconfig /flushdns | Out-Null } catch {}
+    
+    $sourceAvailability = Test-SourceAvailability
+    
+    $skipGitGud = -not $sourceAvailability.GitGud
+    $mirrorsAvailable = $sourceAvailability.GitHub -or $sourceAvailability.Codeberg
+
+    # ---- 根据预检结果决定下载策略 ----
+    # 优先级：GitGud > GitHub > Codeberg > 本地缓存
+    # 只尝试预检确认可达的源，避免浪费时间等待不可达的源
+    $svrPrimaryUrl = $null
+    $svrUseAuth = $false
+    $svrTimeout = 30  # 镜像下载超时（预检已知主机可达，文件下载通常很快）
+    $svrRetries = 3    # 镜像重试次数（已知可达，少重试即可）
+    $svrSourceName = ""
+    
+    if ($sourceAvailability.GitGud) {
+        Write-Host "[连接检测] GitGud 可达 → 使用主源下载。"
+        $svrPrimaryUrl = "https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main"
+        $svrUseAuth = $true
+        $svrTimeout = 60
+        $svrRetries = 5
+        $svrSourceName = "GitGud"
+    } elseif ($sourceAvailability.GitHub) {
+        Write-Host "[连接检测] GitGud 不可达，GitHub 可达 → 使用 GitHub 镜像下载。"
+        Write-Host "[提示] 如镜像下载失败，请打开页面确认: $MirrorGitHubPage"
+        $svrPrimaryUrl = $MirrorServerUrls[0]
+        $svrSourceName = "GitHub"
+    } elseif ($sourceAvailability.Codeberg) {
+        Write-Host "[连接检测] GitGud/GitHub 不可达，Codeberg 可达 → 使用 Codeberg 镜像下载。"
+        Write-Host "[提示] 如镜像下载失败，请打开页面确认: $MirrorCodebergPage"
+        $svrPrimaryUrl = $MirrorServerUrls[1]
+        $svrSourceName = "Codeberg"
+    } else {
+        Write-Host "[连接检测] 所有在线源均不可达，将直接使用本地缓存。"
+        Write-Host "[提示] 请检查网络连接或使用备用网络后重试。"
+        $svrSourceName = "本地缓存"
+    }
+    
+    # ================================================================
     #  并行下载：服务端源码 + GM 工具 —— 同时下载，节省时间
     # ================================================================
     # 使用 RunspacePool 创建 2 线程的线程池，两个下载同时进行
@@ -842,72 +977,92 @@ try {
     $pool.Open()
 
     # ---- 任务 1：下载服务端源码 ZIP ----
-    $svrPS = [PowerShell]::Create()
-    $svrPS.RunspacePool = $pool
-    [void]$svrPS.AddScript({
-        param($u, $t, $tok)
-        # 先删除旧的下载文件
-        Remove-Item $t -Force -ErrorAction SilentlyContinue
-        # GitLab API 认证头：PRIVATE-TOKEN（不是 Authorization！）
-        $h = @{ "PRIVATE-TOKEN" = $tok }
-        # 最多重试 5 次
-        for ($a = 1; $a -le 5; $a++) {
-            try {
-                Invoke-WebRequest -Uri $u -OutFile $t -Headers $h -UseBasicParsing -TimeoutSec 60
-                # 检查文件是否有效（大小 > 50KB 才认为成功）
-                if ((Test-Path $t) -and (Get-Item $t).Length -gt 51200) { return $true }
-                Remove-Item $t -Force -ErrorAction SilentlyContinue
-            } catch {
-                # 下载失败，删除不完整的文件
-                Remove-Item $t -Force -ErrorAction SilentlyContinue
+    # v1.911: 根据预检结果智能选择下载源（不盲目重试不可达源）
+    $svrPS = $null; $svrHandle = $null; $svrOk = $false; $svrSize = "N/A"
+    if ($svrPrimaryUrl) {
+        $svrPS = [PowerShell]::Create()
+        $svrPS.RunspacePool = $pool
+        [void]$svrPS.AddScript({
+            param($u, $t, $tok, $timeout, $maxRetries)
+            Remove-Item $t -Force -ErrorAction SilentlyContinue
+            $h = if ($tok) { @{ "PRIVATE-TOKEN" = $tok } } else { @{} }
+            for ($a = 1; $a -le $maxRetries; $a++) {
+                try {
+                    if ($h.Count -gt 0) {
+                        Invoke-WebRequest -Uri $u -OutFile $t -Headers $h -UseBasicParsing -TimeoutSec $timeout
+                    } else {
+                        Invoke-WebRequest -Uri $u -OutFile $t -UseBasicParsing -TimeoutSec $timeout
+                    }
+                    if ((Test-Path $t) -and (Get-Item $t).Length -gt 51200) { return $true }
+                    Remove-Item $t -Force -ErrorAction SilentlyContinue
+                } catch {
+                    Remove-Item $t -Force -ErrorAction SilentlyContinue
+                }
+                if ($a -lt $maxRetries) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
             }
-            if ($a -lt 5) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
-        }
-        return $false
-    })
-    # 传入参数：下载地址、保存路径、API 令牌
-    # GitLab API 归档下载格式：
-    #   /projects/:id/repository/archive.zip?sha=分支名
-    [void]$svrPS.AddArgument("https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main")
-    [void]$svrPS.AddArgument($TempZip)
-    [void]$svrPS.AddArgument($ApiToken)
-    $svrHandle = $svrPS.BeginInvoke()   # 异步启动
+            return $false
+        })
+        [void]$svrPS.AddArgument($svrPrimaryUrl)
+        [void]$svrPS.AddArgument($TempZip)
+        [void]$svrPS.AddArgument($(if ($svrUseAuth) { $ApiToken } else { $null }))
+        [void]$svrPS.AddArgument($svrTimeout)
+        [void]$svrPS.AddArgument($svrRetries)
+        $svrHandle = $svrPS.BeginInvoke()
+        Write-Host "Server download: 正在从 $svrSourceName 下载..."
+    } else {
+        Write-Host "Server download: SKIPPED (所有在线源不可达，稍后使用本地缓存)"
+    }
 
     # ---- 任务 2：下载 GM 工具源码 ZIP ----
+    # v1.911: GM 主源为 Codeberg 公开仓库，如预检不可达则直接使用镜像
     $gmPS = [PowerShell]::Create()
     $gmPS.RunspacePool = $pool
     [void]$gmPS.AddScript({
-        param($u, $t)
+        param($u, $t, $timeout, $maxRetries)
         Remove-Item $t -Force -ErrorAction SilentlyContinue
-        # GM 工具仓库在 Codeberg（公开仓库，无需认证）
-        for ($a = 1; $a -le 5; $a++) {
+        for ($a = 1; $a -le $maxRetries; $a++) {
             try {
-                Invoke-WebRequest -Uri $u -OutFile $t -UseBasicParsing -TimeoutSec 60
-                # 检查文件是否有效（GM 工具源码较小，> 10KB 即认为成功）
+                Invoke-WebRequest -Uri $u -OutFile $t -UseBasicParsing -TimeoutSec $timeout
                 if ((Test-Path $t) -and (Get-Item $t).Length -gt 10240) { return $true }
                 Remove-Item $t -Force -ErrorAction SilentlyContinue
             } catch {
                 Remove-Item $t -Force -ErrorAction SilentlyContinue
             }
-            if ($a -lt 5) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
+            if ($a -lt $maxRetries) { Start-Sleep -Seconds ([math]::Pow(2, $a - 1)) }
         }
         return $false
     })
-    # 传入参数：Codeberg 的归档下载地址
-    # Codeberg 归档格式：https://域名/用户名/仓库名/archive/分支名.zip
-    [void]$gmPS.AddArgument("$gmRepo/archive/main.zip")
-    [void]$gmPS.AddArgument($gmTempZip)
-    $gmHandle = $gmPS.BeginInvoke()   # 异步启动
+    if ($sourceAvailability.Codeberg) {
+        [void]$gmPS.AddArgument("$gmRepo/archive/main.zip")
+        [void]$gmPS.AddArgument($gmTempZip)
+        [void]$gmPS.AddArgument(30)
+        [void]$gmPS.AddArgument(3)
+        Write-Host "GM download: 正在从 Codeberg 主源下载..."
+    } elseif ($sourceAvailability.GitHub) {
+        [void]$gmPS.AddArgument($MirrorGMUrls[0])
+        [void]$gmPS.AddArgument($gmTempZip)
+        [void]$gmPS.AddArgument(30)
+        [void]$gmPS.AddArgument(3)
+        Write-Host "GM download: Codeberg 不可达，使用 GitHub 镜像下载..."
+    } else {
+        [void]$gmPS.AddArgument($MirrorGMUrls[1])
+        [void]$gmPS.AddArgument($gmTempZip)
+        [void]$gmPS.AddArgument(30)
+        [void]$gmPS.AddArgument(1)
+        Write-Host "GM download: Codeberg/GitHub 均不可达，尝试 Codeberg 镜像（可能失败）..."
+    }
+    $gmHandle = $gmPS.BeginInvoke()
 
     # ---- 等待两个下载任务完成 ----
-    $svrOk = $svrPS.EndInvoke($svrHandle); $svrPS.Dispose()
-    $svrSize = if ($svrOk -and (Test-Path $TempZip)) { "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB" } else { "N/A" }
-    Write-Host "Server download: $(if($svrOk){'OK'}else{'FAILED'}) ($svrSize)"
+    if ($svrPS) {
+        $svrOk = $svrPS.EndInvoke($svrHandle); $svrPS.Dispose()
+        $svrSize = if ($svrOk -and (Test-Path $TempZip)) { "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB" } else { "N/A" }
+        Write-Host "Server download: $(if($svrOk){'OK'}else{'FAILED'}) ($svrSize)"
+    }
 
     # 服务器下载后 ZIP 完整性验证
     if ($svrOk) {
         try {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
             $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
             if ($testZip.Entries.Count -eq 0) { throw "ZIP empty" }
             $testZip.Dispose()
@@ -929,13 +1084,27 @@ try {
         } catch { Write-Host "GM ZIP 损坏: $_"; $gmOk = $false }
     }
 
-    # GM 镜像回退
+    # GM 镜像回退 (v1.911: 只尝试预检可达的源，不盲目重试死源)
     if (-not $gmOk) {
-        Write-Host "GM 下载失败，尝试镜像源..."
-        foreach ($gmUrl in @("https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/mirrors/DfoGmTool-latest.zip","https://raw.githubusercontent.com/118coder/ServerUI-AUM-S4A12/main/dfogmtool.zip")) {
+        Write-Host "GM 下载失败，根据预检结果选择备用源..."
+        $gmFallbackUrls = @()
+        $gmFallbackNames = @()
+        # GitHub GM mirror
+        if ($sourceAvailability.GitHub) {
+            $gmFallbackUrls += $MirrorGMUrls[0]
+            $gmFallbackNames += "GitHub"
+        }
+        # Codeberg mirror (only if primary wasn't Codeberg)
+        if ($sourceAvailability.Codeberg) {
+            $gmFallbackUrls += $MirrorGMUrls[1]
+            $gmFallbackNames += "Codeberg镜像"
+        }
+        foreach ($i in 0..($gmFallbackUrls.Count - 1)) {
+            if ($gmOk) { break }
             try {
+                Write-Host "  尝试 $($gmFallbackNames[$i]): $($gmFallbackUrls[$i])"
                 Remove-Item $gmTempZip -Force -ErrorAction SilentlyContinue
-                Invoke-WebRequest -Uri $gmUrl -OutFile $gmTempZip -UseBasicParsing -TimeoutSec 60
+                Invoke-WebRequest -Uri $gmFallbackUrls[$i] -OutFile $gmTempZip -UseBasicParsing -TimeoutSec 30
                 $testZip = [System.IO.Compression.ZipFile]::OpenRead($gmTempZip)
                 if ($testZip.Entries.Count -gt 0) { $gmOk = $true; $testZip.Dispose(); break }
                 $testZip.Dispose()
@@ -952,51 +1121,46 @@ try {
     $pool.Close()
     Write-Host "##PROGRESS##20"
 
-    # ---- GitHub 镜像 latest.json 可用于后续回退 ----
-    $mirrorOk = $false
+    # ---- 镜像回退 (v1.911: 只尝试预检可达的源，不盲目重试死源) ----
     if (-not $svrOk) {
-        Write-Host "主源失败/损坏，尝试镜像..."
-        $metaUrls = @(
-            "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/latest.json",
-            "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main/latest.json"
-        )
-        foreach ($mu in $metaUrls) {
-            try {
-                $mr = Invoke-WebRequest -Uri $mu -UseBasicParsing -TimeoutSec 10
-                $meta = $mr.Content | ConvertFrom-Json
-                $pkg = $meta.package; if (-not $pkg) { continue }
-                $dl = $mu -replace '/latest\.json$','' + "/mirrors/$pkg.zip"
-                Write-Host "  镜像下载: $dl"
-                Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
-                Invoke-WebRequest -Uri $dl -OutFile $TempZip -UseBasicParsing -TimeoutSec 60
-                $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
-                if ($testZip.Entries.Count -gt 0) {
-                    $svrOk = $true; $mirrorOk = $true; $testZip.Dispose()
-                    Write-Host "  镜像下载成功! ($($testZip.Entries.Count) 条目)"
-                    break
-                }
-                $testZip.Dispose()
-            } catch { Write-Host "  镜像尝试失败: $_" }
+        Write-Host "[回退] $svrSourceName 下载失败/损坏，根据预检结果选择备用源..."
+        
+        $fallbackUrls = @()
+        $fallbackNames = @()
+        if ($sourceAvailability.GitHub -and $svrSourceName -ne "GitHub") {
+            $fallbackUrls += $MirrorServerUrls[0]
+            $fallbackNames += "GitHub"
         }
-    }
-
-    # 在线兜底: latest.zip 直链
-    if (-not $svrOk) {
-        Write-Host "  智能镜像失败，尝试直链 latest.zip..."
-        foreach ($fb in @("https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main/mirrors/ServerS4A12-latest.zip","https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main/mirrors/ServerS4A12-latest.zip")) {
-            try {
-                Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
-                Invoke-WebRequest -Uri $fb -OutFile $TempZip -UseBasicParsing -TimeoutSec 60
-                $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
-                if ($testZip.Entries.Count -gt 0) { $svrOk = $true; $testZip.Dispose(); break }
-                $testZip.Dispose()
-            } catch { }
+        if ($sourceAvailability.Codeberg -and $svrSourceName -ne "Codeberg") {
+            $fallbackUrls += $MirrorServerUrls[1]
+            $fallbackNames += "Codeberg"
+        }
+        
+        if ($fallbackUrls.Count -gt 0) {
+            Write-Host "[回退] 预检可达的备用源: $($fallbackNames -join ' → ')"
+            for ($i = 0; $i -lt $fallbackUrls.Count; $i++) {
+                if ($svrOk) { break }
+                try {
+                    Write-Host "  尝试 $($fallbackNames[$i]): $($fallbackUrls[$i])"
+                    Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+                    Invoke-WebRequest -Uri $fallbackUrls[$i] -OutFile $TempZip -UseBasicParsing -TimeoutSec 30
+                    $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+                    if ($testZip.Entries.Count -gt 0) {
+                        $svrOk = $true; $testZip.Dispose()
+                        Write-Host "  $($fallbackNames[$i]) 备用源下载成功!"
+                    } else { $testZip.Dispose() }
+                } catch {
+                    Write-Host "  $($fallbackNames[$i]) 尝试失败: $_"
+                }
+            }
+        } else {
+            Write-Host "[回退] 无预检可达的备用源，跳过在线回退。"
         }
     }
 
     # 终极兜底: 本地 latest/
     if (-not $svrOk -and (Test-Path $LatestSvr)) {
-        Write-Host "  所有在线源失败，用本地缓存: $LatestSvr"
+        Write-Host "  使用本地缓存: $LatestSvr"
         Copy-Item $LatestSvr $TempZip -Force
         try { $tz=[System.IO.Compression.ZipFile]::OpenRead($TempZip); if ($tz.Entries.Count -gt 0) { $svrOk = $true }; $tz.Dispose() } catch { }
     }
@@ -1014,7 +1178,6 @@ try {
     Write-Host "Extracting..."
     try {
         # ZIP 完整性预检：确保文件不是损坏的
-        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         try {
             $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
             if ($testZip.Entries.Count -eq 0) { throw "ZIP empty" }

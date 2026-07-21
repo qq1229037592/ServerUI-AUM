@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * AUM管理器自更新服务 (SelfUpdateService) — v1.91
+ * AUM管理器自更新服务 (SelfUpdateService) — v1.911
  * ==================================================================
  *
  * 【功能说明】
@@ -364,7 +364,7 @@ public class SelfUpdateService
         return null;
     }
 
-    static async Task<int> RunDotnet(string sdk, string args, string workDir)
+    async Task<int> RunDotnet(string sdk, string args, string workDir)
     {
         var psi = new ProcessStartInfo
         {

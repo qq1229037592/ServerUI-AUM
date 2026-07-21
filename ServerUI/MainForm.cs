@@ -1,6 +1,6 @@
 /*
  * ==================================================================
-     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.91
+ *     主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.911
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.91】新增众包镜像更新系统，多仓库容灾
-    const string VER = "1.91";
+    // 【v1.911】新增众包镜像更新系统，多仓库容灾
+    const string VER = "1.911";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -223,7 +223,7 @@ public partial class MainForm : Form
         EnableDoubleBuffer(this);
 
         // Keep text at its designed DPI-aware size. Shrinking it during resize caused clipped labels.
-        Load += async (s, e) => { Ck(); Rf(); await CheckRepositoryConnection(); await CheckAUMUpdate(); _ = ValidateMirrorTokens(); };
+        Load += async (s, e) => { Ck(); Rf(); await CheckBasicNetwork(); await CheckAUMUpdate(); };
     }
 
     // =================================================================
@@ -1237,18 +1237,19 @@ public partial class MainForm : Form
         root.Controls.Add(lp, 0, 2);
 
         // ============================================================
-        // ★ 底部链接栏 (r3) ★ — GM工具链接 + 代码仓库链接
-        // v1.85-1 美化: 背景使用次背景色，间距优化
+        // ★ 底部链接栏 (r3) ★ — GM工具链接 + 代码仓库链接 + 镜像链接
+        // v1.911: 新增 GitHub/Codeberg 镜像仓库链接
         // ============================================================
         var r3 = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2, RowCount = 1,
+            ColumnCount = 3, RowCount = 1,
             BackColor = Card,
             Padding = new Padding(10, 2, 10, 2)
         };
-        r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-        r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33F));
+        r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33F));
+        r3.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34F));
 
         // GM 工具链接 (使用金色常量 Color.Gold)
         var lg = new LinkLabel
@@ -1269,11 +1270,26 @@ public partial class MainForm : Form
             });
         };
 
-        // 仓库链接 (使用强调色 Ac)
+        // 镜像链接 (GitHub, 使用科技蓝 Ac)
+        var lm = new LinkLabel
+        {
+            Text = "🔷 镜像: GitHub",
+            ForeColor = Ac, LinkColor = Ac,
+            ActiveLinkColor = Color.White,
+            AutoSize = true, Anchor = AnchorStyles.None,
+            Font = new Font("Microsoft YaHei", 9f)
+        };
+        lm.LinkClicked += (s, e) =>
+        {
+            Lg(">>> 打开 GitHub 镜像仓库", Color.CornflowerBlue);
+            Process.Start("explorer.exe", UpdateService.MirrorGitHubPage);
+        };
+
+        // 仓库链接 (GitGud + Codeberg, 使用强调色)
         var lr = new LinkLabel
         {
-            Text = "📦 仓库: gitgud.io/rewio/86JP",
-            ForeColor = Ac, LinkColor = Ac,
+            Text = "源仓库：https://gitgud.io/rewio/86JP",
+            ForeColor = Txt2, LinkColor = Txt2,
             ActiveLinkColor = Color.White,
             AutoSize = true, Anchor = AnchorStyles.Right,
             Font = new Font("Microsoft YaHei", 9f)
@@ -1281,12 +1297,12 @@ public partial class MainForm : Form
         lr.LinkClicked += (s, e) =>
         {
             Lg(">>> 打开仓库链接", Color.CornflowerBlue);
-            Process.Start("explorer.exe",
-                "https://gitgud.io/rewio/86JP");
+            Process.Start("explorer.exe", "https://gitgud.io/rewio/86JP");
         };
 
         r3.Controls.Add(lg, 0, 0);
-        r3.Controls.Add(lr, 1, 0);
+        r3.Controls.Add(lm, 1, 0);
+        r3.Controls.Add(lr, 2, 0);
         root.Controls.Add(r3, 0, 3);
     }
 
@@ -2186,44 +2202,75 @@ public partial class MainForm : Form
         await System.Threading.Tasks.Task.CompletedTask;
     }
 
-    async System.Threading.Tasks.Task CheckRepositoryConnection()
+    async System.Threading.Tasks.Task CheckBasicNetwork()
     {
-        Lg(">>> 正在检测更新仓库连接: gitgud.io ...", Color.CornflowerBlue);
-        var status = await _up.CheckRepositoryAsync();
-        if (!status.Available)
+        Lg(">>> 正在检测网络可达性 (网页检测, 无API调用)...", Color.CornflowerBlue);
+        try
         {
-            Lg("[网络] 无法连接更新仓库 (" + status.Detail + ")。更新可能失败，"
-                + "建议先开启科学上网（梯子）后重试。", Rd);
+            var basic = await _up.CheckBasicConnectivityAsync();
+            foreach (var kv in basic)
+            {
+                var name = kv.Key;
+                var ms = kv.Value.LatencyMs;
+                var reachable = kv.Value.Reachable;
+                string tier, msg; Color color;
+                if (!reachable)
+                {
+                    tier = "不可达"; msg = name + " " + tier + " (超时)";
+                    color = Rd;
+                }
+                else if (ms <= 800)
+                {
+                    tier = "正常"; msg = name + " " + tier + " (延迟 " + ms + " ms)";
+                    color = Gn;
+                }
+                else if (ms <= 3000)
+                {
+                    tier = "较慢"; msg = name + " " + tier + " (延迟 " + ms + " ms), 建议开启科学上网";
+                    color = Or;
+                }
+                else
+                {
+                    tier = "极慢"; msg = name + " " + tier + " (延迟 " + ms + " ms), 更新可能失败";
+                    color = Rd;
+                }
+                Lg("[网络] " + msg, color);
+            }
         }
-        else if (status.LatencyMs <= 800)
-        {
-            Lg("[网络] 仓库连接正常，延迟 " + status.LatencyMs
-                + " ms，可正常进行更新。", Gn);
-        }
-        else if (status.LatencyMs <= 3000)
-        {
-            Lg("[网络] 仓库连接较慢，延迟 " + status.LatencyMs
-                + " ms。可以更新，但建议开启科学上网（梯子）以提高稳定性。", Or);
-        }
-        else
-        {
-            Lg("[网络] 仓库连接延迟极高，约 " + status.LatencyMs
-                + " ms。更新可能失败，建议先开启科学上网（梯子）后重试。", Rd);
-        }
+        catch { Lg("[网络] 检测异常，不影响正常使用。", Txt2); }
     }
 
     async System.Threading.Tasks.Task<bool> CanUpdate()
     {
         Lg(">>> 更新前检查仓库连接...", Color.CornflowerBlue);
         var status = await _up.CheckRepositoryAsync();
-        if (status.Available && status.LatencyMs <= 3000) return true;
+        if (!status.Available || status.LatencyMs > 3000)
+        {
+            var reason = status.Available
+                ? "连接延迟极高（" + status.LatencyMs + " ms）"
+                : "无法连接（" + status.Detail + "）";
+            Lg("[网络降级] 仓库" + reason
+                + "。将自动重试并改用源码包同步；建议开启科学上网（梯子）提高成功率。", Or);
+        }
 
-        var reason = status.Available
-            ? "连接延迟极高（" + status.LatencyMs + " ms）"
-            : "无法连接（" + status.Detail + "）";
-        Lg("[网络降级] 仓库" + reason
-            + "。将自动重试并改用源码包同步；建议开启科学上网（梯子）提高成功率。", Or);
-        return true;
+        // v1.911: 更新前才验证 API 令牌和镜像源（不在启动时消耗 API 配额）
+        _ = ValidateMirrorTokens();
+        Lg(">>> 更新前检测镜像源: GitHub / Codeberg ...", Color.CornflowerBlue);
+        try
+        {
+            var mirrors = await _up.CheckMirrorSourcesAsync();
+            foreach (var kv in mirrors)
+            {
+                var ok = kv.Value.Available;
+                var ms = kv.Value.LatencyMs;
+                var color = ok ? Gn : Or;
+                var tag = ok ? "可访问" : "不可达";
+                Lg("[镜像] " + kv.Key + " " + tag + " (延迟 " + ms + " ms)", color);
+            }
+        }
+        catch { Lg("[镜像] 检测异常，不影响正常使用。", Txt2); }
+
+        return true;  // 始终允许继续，update.ps1 内部会做源选择
     }
 
     async System.Threading.Tasks.Task CheckAUMUpdate()

@@ -7,6 +7,11 @@
  *   调用外部 update.ps1 PowerShell 脚本，执行服务端的增量或全量更新。
  *   负责：启动 PowerShell 进程 → 实时回传输出日志 → 通知完成状态。
  * 
+ * 【v1.911 更新】
+ *   - 新增镜像源可达性检测 (CheckMirrorSourcesAsync)
+ *   - 新增镜像仓库 URL 常量，供 MainForm 显示
+ *   - update.ps1 已集成智能源切换（GitGud 不可达 → GitHub 优先 → Codeberg）
+ * 
  * 【工作流程】
  *   1. MainForm 调用 RunIncremental() 或 RunFull()
  *   2. 本服务启动 powershell.exe 子进程，执行 AUM管理组件\update.ps1
@@ -46,6 +51,13 @@ public class UpdateService
             return Encoding.UTF8.GetString(Convert.FromBase64String(once));
         }
     }
+
+    // v1.911: 镜像仓库 URL（当 GitGud 不可达时自动切换）
+    // update.ps1 已集成智能源切换：GitGud 不可达 → GitHub 优先 → Codeberg → 本地缓存
+    public const string MirrorGitHubRaw    = "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main";
+    public const string MirrorCodebergRaw  = "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main";
+    public const string MirrorGitHubPage   = "https://github.com/118coder/ServerS4A12.86JP";
+    public const string MirrorCodebergPage = "https://codeberg.org/118coder/ServerS4A12.86JP";
 
     Process _runningProc;
 
@@ -110,6 +122,77 @@ public class UpdateService
             LatencyMs = timer.ElapsedMilliseconds,
             Detail = lastError?.GetBaseException().Message ?? "未知连接错误"
         };
+    }
+
+    // v1.911: 网页可达性轻量检测（启动时使用，不消耗 API 配额）
+    // 仅对各源首页做 HEAD 请求，不使用 API 令牌或 raw 文件获取
+    // 返回字典包含各源名称、是否可达、延迟毫秒数
+    public async Task<Dictionary<string, (bool Reachable, long LatencyMs)>> CheckBasicConnectivityAsync()
+    {
+        var results = new Dictionary<string, (bool, long)>();
+        
+        async Task<(bool, long)> HeadCheck(string url, int timeoutMs)
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Head, url);
+                using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+                client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+                using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+                sw.Stop();
+                return (true, sw.ElapsedMilliseconds);
+            }
+            catch
+            {
+                sw.Stop();
+                return (false, sw.ElapsedMilliseconds);
+            }
+        }
+        
+        // 网页首页检测，不使用 API —— 防配额消耗
+        var (gr, gl) = await HeadCheck("https://gitgud.io", 6000);
+        results["GitGud"] = (gr, gl);
+        var (hr, hl) = await HeadCheck("https://github.com", 6000);
+        results["GitHub"] = (hr, hl);
+        var (cr, cl) = await HeadCheck("https://codeberg.org", 6000);
+        results["Codeberg"] = (cr, cl);
+        
+        return results;
+    }
+
+    // v1.911: 镜像源 raw 文件可达性检测（更新前调用，验证 latest.json 可读取）
+    public async Task<Dictionary<string, (bool Available, long LatencyMs)>> CheckMirrorSourcesAsync()
+    {
+        var results = new Dictionary<string, (bool, long)>();
+        
+        // GitHub raw
+        var ghTimer = Stopwatch.StartNew();
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+            using var response = await client.GetAsync(MirrorGitHubRaw + "/latest.json",
+                HttpCompletionOption.ResponseHeadersRead);
+            ghTimer.Stop();
+            results["GitHub"] = (response.IsSuccessStatusCode, ghTimer.ElapsedMilliseconds);
+        }
+        catch { ghTimer.Stop(); results["GitHub"] = (false, ghTimer.ElapsedMilliseconds); }
+        
+        // Codeberg raw
+        var cbTimer = Stopwatch.StartNew();
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            client.DefaultRequestHeaders.Add("User-Agent", "ServerUI-AUM");
+            using var response = await client.GetAsync(MirrorCodebergRaw + "/latest.json",
+                HttpCompletionOption.ResponseHeadersRead);
+            cbTimer.Stop();
+            results["Codeberg"] = (response.IsSuccessStatusCode, cbTimer.ElapsedMilliseconds);
+        }
+        catch { cbTimer.Stop(); results["Codeberg"] = (false, cbTimer.ElapsedMilliseconds); }
+        
+        return results;
     }
 
     /*
