@@ -394,16 +394,33 @@ public class SelfUpdateService
             foreach (var f in Directory.GetFiles(repoRoot, pattern))
             {
                 var name = Path.GetFileName(f);
-                // 跳过 GameLog.log 等服务端运行时文件
                 if (name.Contains("GameLog") || name.Contains("运行日志")) continue;
                 var dest = Path.Combine(userRoot, name);
-                if (!File.Exists(dest) || new FileInfo(f).Length != new FileInfo(dest).Length
-                    || new FileInfo(f).LastWriteTimeUtc != new FileInfo(dest).LastWriteTimeUtc)
+                var srcInfo = new FileInfo(f);
+
+                if (File.Exists(dest))
                 {
-                    File.Copy(f, dest, true);
+                    var dstInfo = new FileInfo(dest);
+                    // 第1级: 大小 + 时间戳完全相同 → 跳过
+                    if (srcInfo.Length == dstInfo.Length
+                        && srcInfo.LastWriteTimeUtc == dstInfo.LastWriteTimeUtc)
+                        continue;
+                    // 第2级: 元数据不同 → SHA-256 比对内容
+                    if (FileHash(f) == FileHash(dest))
+                        continue;
                 }
+                // 第3级: 内容确实不同(或本地不存在) → 复制
+                File.Copy(f, dest, true);
             }
         }
+    }
+
+    static string FileHash(string path)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        using var fs = File.OpenRead(path);
+        var hash = sha.ComputeHash(fs);
+        return BitConverter.ToString(hash);
     }
 
     static void CleanDuplicates(string dir)
