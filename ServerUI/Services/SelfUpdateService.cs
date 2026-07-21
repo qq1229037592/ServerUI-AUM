@@ -229,6 +229,10 @@ public class SelfUpdateService
             // R4.5 清理重复文件: GitHub 仓库可能存在根目录和子目录同名文件
             CleanDuplicates(localDir);
 
+            // R4.6 同步仓库根目录脚本文件: update.ps1 / bat 等也会更新
+            OutputReceived?.Invoke("[AUM更新] 正在同步脚本文件...");
+            SyncRootFiles(rootDir, Path.GetDirectoryName(localDir) ?? localDir);
+
             // R5 dotnet restore
             OutputReceived?.Invoke("[AUM更新] 正在还原依赖...");
             var sdk = FindDotNet();
@@ -380,6 +384,43 @@ public class SelfUpdateService
         p.Start();
         await p.WaitForExitAsync();
         return p.ExitCode;
+    }
+
+    static void SyncRootFiles(string repoRoot, string userRoot)
+    {
+        var exts = new[] { "*.ps1", "*.bat", "*.txt", "*.md" };
+        foreach (var pattern in exts)
+        {
+            foreach (var f in Directory.GetFiles(repoRoot, pattern))
+            {
+                var name = Path.GetFileName(f);
+                if (name.Contains("GameLog") || name.Contains("运行日志")) continue;
+                var dest = Path.Combine(userRoot, name);
+                var srcInfo = new FileInfo(f);
+
+                if (File.Exists(dest))
+                {
+                    var dstInfo = new FileInfo(dest);
+                    // 第1级: 大小 + 时间戳完全相同 → 跳过
+                    if (srcInfo.Length == dstInfo.Length
+                        && srcInfo.LastWriteTimeUtc == dstInfo.LastWriteTimeUtc)
+                        continue;
+                    // 第2级: 元数据不同 → SHA-256 比对内容
+                    if (FileHash(f) == FileHash(dest))
+                        continue;
+                }
+                // 第3级: 内容确实不同(或本地不存在) → 复制
+                File.Copy(f, dest, true);
+            }
+        }
+    }
+
+    static string FileHash(string path)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        using var fs = File.OpenRead(path);
+        var hash = sha.ComputeHash(fs);
+        return BitConverter.ToString(hash);
     }
 
     static void CleanDuplicates(string dir)
