@@ -53,9 +53,11 @@ public class UpdateService
     }
 
     // v1.911: 镜像仓库 URL（当 GitGud 不可达时自动切换）
-    // update.ps1 已集成智能源切换：GitGud 不可达 → GitHub 优先 → Codeberg → 本地缓存
+    // update.ps1 已集成智能源切换：GitGud 不可达 → Gitee(国内) → GitHub → Codeberg → 本地缓存
+    public const string MirrorGiteeRaw     = "https://gitee.com/c118oder/ServerS4A12.86JP/raw/main";
     public const string MirrorGitHubRaw    = "https://raw.githubusercontent.com/118coder/ServerS4A12.86JP/main";
     public const string MirrorCodebergRaw  = "https://codeberg.org/118coder/ServerS4A12.86JP/raw/branch/main";
+    public const string MirrorGiteePage    = "https://gitee.com/c118oder/ServerS4A12.86JP";
     public const string MirrorGitHubPage   = "https://github.com/118coder/ServerS4A12.86JP";
     public const string MirrorCodebergPage = "https://codeberg.org/118coder/ServerS4A12.86JP";
 
@@ -153,6 +155,8 @@ public class UpdateService
         // 网页首页检测，不使用 API —— 防配额消耗
         var (gr, gl) = await HeadCheck("https://gitgud.io", 6000);
         results["GitGud"] = (gr, gl);
+        var (geR, geL) = await HeadCheck("https://gitee.com", 6000);
+        results["Gitee"] = (geR, geL);
         var (hr, hl) = await HeadCheck("https://github.com", 6000);
         results["GitHub"] = (hr, hl);
         var (cr, cl) = await HeadCheck("https://codeberg.org", 6000);

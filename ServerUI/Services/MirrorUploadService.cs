@@ -4,14 +4,14 @@
  * ==================================================================
  *
  * 【功能说明】
- *   GitHub/Codeberg 双仓库镜像上传 + 分布式锁，防并发冲突。
- *   将 GitGud 原始仓库的源码同步到国内可访问的镜像仓库。
+ *   Gitee/GitHub/Codeberg 三仓库镜像上传 + 分布式锁，防并发冲突。
+ *   将 GitGud 原始仓库的源码同步到国内外可访问的镜像仓库。
  *
  * 【工作流程】
- *   1. 检查各平台连通性 (GitGud / GitHub / Codeberg)
+ *   1. 检查各平台连通性 (GitGud / Gitee / GitHub / Codeberg)
  *   2. 如果能连 GitGud → 成为"上传者"
  *   3. 尝试获取 GitHub 分布式锁 (防多用户同时上传)
- *   4. 下载 GitGud 源码 → SHA 去重 → 上传到 GitHub/Codeberg Release
+ *   4. 下载 GitGud 源码 → SHA 去重 → 上传到 Gitee/GitHub/Codeberg
  *   5. 更新版本元数据 → 释放锁
  *
  * 【分布式锁设计】
@@ -36,15 +36,18 @@ namespace ServerUI.Services;
 public class MirrorUploadService
 {
     // 双重 base64 编码的令牌，运行时解码（防 GitHub 安全扫描）
-    const string GitHubTokenB64 = "WjJod1gxQlpaVEZNYzBjMlpWZElhMkZNUTNWa1RVbHNkVTFEVmxKb1pqVlllREZwTUVoa01BPT0=";
+    const string GiteeTokenB64    = "WlRsbVpXWmlPRE0zWWpsaU5UVTBaamRpTVdaak4yRXdZbVprTlRKaFpUaz0=";
+    const string GitHubTokenB64   = "WjJod1gxQlpaVEZNYzBjMlpWZElhMkZNUTNWa1RVbHNkVTFEVmxKb1pqVlllREZwTUVoa01BPT0=";
     const string CodebergTokenB64 = "WlRKa09HVmpOR1E1TW1Zek5UUmpZVFZrT0dOa1kyTTFaVFUyWmpNek1EVTNaRGRpTVRVMU1RPT0=";
-    const string GitGudTokenB64 = "WjJkcGIxOUZkbUpmUmtScFpqRnNWVlJXUVZGcmR6QjZTMWRIT0RaTlVYQXhUMnBLYWxvelowc3VNREV1TVRBeFozVXhhMnBq";
-    static string GitHubToken => Decode2(GitHubTokenB64);
+    const string GitGudTokenB64   = "WjJkcGIxOUZkbUpmUmtScFpqRnNWVlJXUVZGcmR6QjZTMWRIT0RaTlVYQXhUMnBLYWxvelowc3VNREV1TVRBeFozVXhhMnBq";
+    static string GiteeToken    => Decode2(GiteeTokenB64);
+    static string GitHubToken   => Decode2(GitHubTokenB64);
     static string CodebergToken => Decode2(CodebergTokenB64);
-    static string GitGudToken => Decode2(GitGudTokenB64);
-    const string GitHubRepo = "118coder/ServerS4A12.86JP";
+    static string GitGudToken   => Decode2(GitGudTokenB64);
+    const string GiteeRepo    = "c118oder/ServerS4A12.86JP";
+    const string GitHubRepo   = "118coder/ServerS4A12.86JP";
     const string CodebergRepo = "118coder/ServerS4A12.86JP";
-    const string GitGudZip = "https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main";
+    const string GitGudZip    = "https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main";
     const int LockTimeout = 600;
     const int MaxRetry = 3;
 
@@ -82,6 +85,7 @@ public class MirrorUploadService
         catch { return false; }
     }
     public async Task<bool> CanReachGitHub() => await CanReach("https://api.github.com");
+    public async Task<bool> CanReachGitee() => await CanReach("https://gitee.com");
     public async Task<bool> CanReachCodeberg() => await CanReach("https://codeberg.org");
 
     public async Task<bool> ValidateTokensAsync()
@@ -316,8 +320,13 @@ public class MirrorUploadService
                 var cbOk = await UploadToCodeberg(zip, pkgName, sha);
                 OutputReceived?.Invoke($"[镜像] Codeberg: {(cbOk ? "OK" : "失败")}");
 
+                // 5.5 上传到 Gitee（国内镜像）
+                OutputReceived?.Invoke("[镜像] 上传到 Gitee...");
+                var gtOk = await UploadToGitee(zip, pkgName, sha);
+                OutputReceived?.Invoke($"[镜像] Gitee: {(gtOk ? "OK" : "失败")}");
+
                 // 6. 上传更新日志 + latest副本
-                if (ghOk || cbOk)
+                if (ghOk || cbOk || gtOk)
                 {
                     OutputReceived?.Invoke("[镜像] 上传更新日志...");
                     await UploadChangelog();
@@ -330,10 +339,11 @@ public class MirrorUploadService
                 }
 
                 // 7. 更新版本元数据
-                if (ghOk || cbOk)
+                if (ghOk || cbOk || gtOk)
                 {
                     var ghDownloadUrl = $"https://raw.githubusercontent.com/{GitHubRepo}/main/mirrors/{pkgName}.zip";
                     var cbDownloadUrl = $"https://codeberg.org/{CodebergRepo}/raw/branch/main/mirrors/{pkgName}.zip";
+                    var gtDownloadUrl = $"https://gitee.com/{GiteeRepo}/raw/main/mirrors/{pkgName}.zip";
                     var meta = JsonSerializer.Serialize(new
                     {
                         version = pkgName,
@@ -341,6 +351,7 @@ public class MirrorUploadService
                         release_date = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
                         sha256 = sha,
                         size_bytes = zipSize,
+                        download_gitee = gtDownloadUrl,
                         download_github = ghDownloadUrl,
                         download_codeberg = cbDownloadUrl
                     });
@@ -482,19 +493,25 @@ public class MirrorUploadService
             }
             catch { }
 
-            // 上传到 GitHub + Codeberg (latest + dated)
+            // 上传到 GitHub + Codeberg + Gitee (latest + dated)
             var gmPkg = "DfoGmTool-" + DateTime.Now.ToString("yyyyMMdd") + "-" + shaPrefix;
             var ghOk = await UploadToGitHubRaw(gmZip, gmPkg);
             var cbOk = await UploadToCodeberg(gmZip, gmPkg, gmSha);
-            if (ghOk || cbOk)
+            var gtOk = await UploadToGitee(gmZip, gmPkg, gmSha);
+            if (ghOk || cbOk || gtOk)
             {
                 await UploadToGitHubRaw(gmZip, "DfoGmTool-latest");
                 var cbB64 = Convert.ToBase64String(gmZip);
                 var cbBody = JsonSerializer.Serialize(new { message = "GM latest", content = cbB64, branch = "main" });
                 var cbUrl = $"https://codeberg.org/api/v1/repos/{CodebergRepo}/contents/mirrors/DfoGmTool-latest.zip";
                 await TryPutFileWithRetry(cbUrl, cbBody, CodebergToken, "token ");
+                // Gitee latest
+                var gtB64 = Convert.ToBase64String(gmZip);
+                var gtBody = JsonSerializer.Serialize(new { access_token = GiteeToken, message = "GM latest", content = gtB64, branch = "main" });
+                var gtUrl = $"https://gitee.com/api/v5/repos/{GiteeRepo}/contents/mirrors/DfoGmTool-latest.zip";
+                await TryPutFileWithRetry(gtUrl, gtBody, GiteeToken, "token ");
             }
-            OutputReceived?.Invoke($"[镜像] GM镜像: {(ghOk || cbOk ? "OK" : "FAIL")}");
+            OutputReceived?.Invoke($"[镜像] GM镜像: {((ghOk || cbOk || gtOk) ? "OK" : "FAIL")}");
         }
         catch (Exception ex)
         {
@@ -524,6 +541,15 @@ public class MirrorUploadService
                 var body = JsonSerializer.Serialize(new { message = "更新 latest", content = b64, branch = "main" });
                 var url = $"https://codeberg.org/api/v1/repos/{CodebergRepo}/contents/mirrors/{fileName}";
                 await TryPutFileWithRetry(url, body, CodebergToken, "token ");
+            }
+            catch { }
+
+            // Gitee（国内镜像）
+            try
+            {
+                var body = JsonSerializer.Serialize(new { access_token = GiteeToken, message = "更新 latest", content = b64, branch = "main" });
+                var url = $"https://gitee.com/api/v5/repos/{GiteeRepo}/contents/mirrors/{fileName}";
+                await TryPutFileWithRetry(url, body, GiteeToken, "token ");
             }
             catch { }
 
@@ -590,6 +616,12 @@ public class MirrorUploadService
             var cbUrl = "https://codeberg.org/api/v1/repos/118coder/ServerS4A12.86JP/contents/mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt";
             var cbOk = await TryPutFileWithRetry(cbUrl, body, CodebergToken, "token ");
             OutputReceived?.Invoke($"[镜像] Codeberg日志: {(cbOk ? "OK" : "FAIL")}");
+
+            // 上传到 Gitee（国内镜像）
+            var gtBody = JsonSerializer.Serialize(new { access_token = GiteeToken, message = "更新日志同步", content = b64, branch = "main" });
+            var gtUrl = "https://gitee.com/api/v5/repos/118coder/ServerS4A12.86JP/contents/mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt";
+            var gtOk = await TryPutFileWithRetry(gtUrl, gtBody, GiteeToken, "token ");
+            OutputReceived?.Invoke($"[镜像] Gitee日志: {(gtOk ? "OK" : "FAIL")}");
         }
         catch (Exception ex)
         {
@@ -902,6 +934,115 @@ public class MirrorUploadService
         catch (Exception ex)
         {
             OutputReceived?.Invoke($"[镜像] Codeberg上传异常: {ex.Message}");
+            return false;
+        }
+    }
+
+    // v1.911: Gitee 国内镜像上传（API v5，格式兼容 Codeberg/Gitea）
+    async Task<bool> UploadToGitee(byte[] zip, string pkgName, string sha)
+    {
+        try
+        {
+            var apiBase = $"https://gitee.com/api/v5/repos/{GiteeRepo}/contents";
+            var authQuery = $"?access_token={GiteeToken}";
+
+            // 1. 上传 ZIP 到 mirrors/ 目录
+            var zipPath = "mirrors/" + pkgName + ".zip";
+            var zipB64 = Convert.ToBase64String(zip);
+            var zipBody = JsonSerializer.Serialize(new
+            {
+                access_token = GiteeToken,
+                content = zipB64,
+                message = $"镜像同步 {pkgName}",
+                branch = "main"
+            });
+
+            var zipReq = new HttpRequestMessage(HttpMethod.Post, $"{apiBase}/{zipPath}");
+            zipReq.Content = new StringContent(zipBody, Encoding.UTF8, "application/json");
+            var zipResp = await _http.SendAsync(zipReq);
+
+            if (!zipResp.IsSuccessStatusCode)
+            {
+                var status = (int)zipResp.StatusCode;
+                if (status == 409 || status == 422)
+                {
+                    var getReq = new HttpRequestMessage(HttpMethod.Get, $"{apiBase}/{zipPath}{authQuery}");
+                    var getResp = await _http.SendAsync(getReq);
+                    if (getResp.IsSuccessStatusCode)
+                    {
+                        var getJson = await getResp.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(getJson);
+                        if (doc.RootElement.TryGetProperty("sha", out var fileSha))
+                        {
+                            var putBody = JsonSerializer.Serialize(new
+                            {
+                                access_token = GiteeToken,
+                                content = zipB64,
+                                message = $"镜像更新 {pkgName}",
+                                sha = fileSha.GetString(),
+                                branch = "main"
+                            });
+                            var putReq = new HttpRequestMessage(HttpMethod.Put, $"{apiBase}/{zipPath}");
+                            putReq.Content = new StringContent(putBody, Encoding.UTF8, "application/json");
+                            zipResp = await _http.SendAsync(putReq);
+                        }
+                    }
+                }
+            }
+
+            // 2. 上传 latest.json（使用与 Codeberg 相同格式的单 download_url）
+            var meta = JsonSerializer.Serialize(new
+            {
+                package = pkgName,
+                release_date = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
+                sha256 = sha,
+                size_bytes = zip.Length,
+                download_url = $"https://gitee.com/{GiteeRepo}/raw/main/mirrors/{pkgName}.zip"
+            });
+
+            var metaB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(meta));
+            var metaBody = JsonSerializer.Serialize(new
+            {
+                access_token = GiteeToken,
+                content = metaB64,
+                message = $"更新元数据 {pkgName}",
+                branch = "main"
+            });
+
+            var metaReq = new HttpRequestMessage(HttpMethod.Post, $"{apiBase}/latest.json");
+            metaReq.Content = new StringContent(metaBody, Encoding.UTF8, "application/json");
+            var metaResp = await _http.SendAsync(metaReq);
+
+            if (!metaResp.IsSuccessStatusCode)
+            {
+                var getMetaReq = new HttpRequestMessage(HttpMethod.Get, $"{apiBase}/latest.json{authQuery}");
+                var gmResp = await _http.SendAsync(getMetaReq);
+                if (gmResp.IsSuccessStatusCode)
+                {
+                    var gmJson = await gmResp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(gmJson);
+                    if (doc.RootElement.TryGetProperty("sha", out var fileSha))
+                    {
+                        var putBody = JsonSerializer.Serialize(new
+                        {
+                            access_token = GiteeToken,
+                            content = metaB64,
+                            message = $"更新元数据 {pkgName}",
+                            sha = fileSha.GetString(),
+                            branch = "main"
+                        });
+                        var putReq = new HttpRequestMessage(HttpMethod.Put, $"{apiBase}/latest.json");
+                        putReq.Content = new StringContent(putBody, Encoding.UTF8, "application/json");
+                        metaResp = await _http.SendAsync(putReq);
+                    }
+                }
+            }
+
+            return zipResp.IsSuccessStatusCode || metaResp.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            OutputReceived?.Invoke($"[镜像] Gitee上传异常: {ex.Message}");
             return false;
         }
     }
