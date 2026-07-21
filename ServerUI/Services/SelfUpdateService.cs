@@ -229,6 +229,10 @@ public class SelfUpdateService
             // R4.5 清理重复文件: GitHub 仓库可能存在根目录和子目录同名文件
             CleanDuplicates(localDir);
 
+            // R4.6 同步仓库根目录脚本文件: update.ps1 / bat 等也会更新
+            OutputReceived?.Invoke("[AUM更新] 正在同步脚本文件...");
+            SyncRootFiles(rootDir, Path.GetDirectoryName(localDir) ?? localDir);
+
             // R5 dotnet restore
             OutputReceived?.Invoke("[AUM更新] 正在还原依赖...");
             var sdk = FindDotNet();
@@ -380,6 +384,26 @@ public class SelfUpdateService
         p.Start();
         await p.WaitForExitAsync();
         return p.ExitCode;
+    }
+
+    static void SyncRootFiles(string repoRoot, string userRoot)
+    {
+        var exts = new[] { "*.ps1", "*.bat", "*.txt", "*.md" };
+        foreach (var pattern in exts)
+        {
+            foreach (var f in Directory.GetFiles(repoRoot, pattern))
+            {
+                var name = Path.GetFileName(f);
+                // 跳过 GameLog.log 等服务端运行时文件
+                if (name.Contains("GameLog") || name.Contains("运行日志")) continue;
+                var dest = Path.Combine(userRoot, name);
+                if (!File.Exists(dest) || new FileInfo(f).Length != new FileInfo(dest).Length
+                    || new FileInfo(f).LastWriteTimeUtc != new FileInfo(dest).LastWriteTimeUtc)
+                {
+                    File.Copy(f, dest, true);
+                }
+            }
+        }
     }
 
     static void CleanDuplicates(string dir)
