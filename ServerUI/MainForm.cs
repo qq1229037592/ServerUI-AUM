@@ -1,6 +1,6 @@
 /*
  * ==================================================================
-     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.9
+     * 主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.91
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.9】新增AUM管理器自更新功能，接入GitHub版本检测
-    const string VER = "1.9";
+    // 【v1.91】新增众包镜像更新系统，多仓库容灾
+    const string VER = "1.91";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -130,6 +130,7 @@ public partial class MainForm : Form
     readonly ArchiveService _ar = new();  // 存档文件管理
     readonly UpdateService  _up = new();  // 更新脚本调用
     readonly SelfUpdateService _au = new(); // AUM管理器自更新
+    readonly MirrorUploadService _mu = new(); // 镜像上传服务
 
     // ===== UI 控件字段 =====
     // 命名规则: lb=Label, bt=Button, cb=CheckBox, lv=ListView, rt=RichTextBox
@@ -2292,6 +2293,30 @@ public partial class MainForm : Form
         }
     }
 
+    async System.Threading.Tasks.Task TryMirrorUpload()
+    {
+        // 后台线程独立运行，不阻塞界面加载
+        await System.Threading.Tasks.Task.Delay(5000);
+        if (await _mu.CanReachGitGud())
+        {
+            Lg("[镜像] 检测到可访问 GitGud，尝试同步镜像...", Txt2);
+            _mu.OutputReceived += Lg;
+            try
+            {
+                await _mu.RunUploaderAsync(VER, Environment.MachineName);
+            }
+            catch (Exception ex)
+            {
+                Lg("[镜像] 同步异常: " + ex.Message, Or);
+            }
+            finally { _mu.OutputReceived -= Lg; }
+        }
+        else
+        {
+            Lg("[镜像] 无法访问 GitGud，跳过镜像上传。", Txt2);
+        }
+    }
+
     // =================================================================
     // 状态刷新 (Rs / Rf / RA)
     // =================================================================
@@ -2438,6 +2463,7 @@ public partial class MainForm : Form
     async System.Threading.Tasks.Task RI()
     {
         if (!await CanUpdate()) return;
+        _ = TryMirrorUpload();
         if (_sv.IsRunning)
         {
             Lg(">>> 检测到服务端正在运行，"
