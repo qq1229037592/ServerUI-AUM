@@ -1,5 +1,5 @@
 ﻿# ==================================================================
-#  ServerS4A12 一键更新脚本 (v1.913)
+#  ServerS4A12 一键更新脚本 (v1.915)
 # ==================================================================
 #
 # 【这个脚本是干什么的？】
@@ -38,7 +38,7 @@
 # -FullSync         : 全量同步开关，带上此参数会覆盖所有文件
 # -NonInteractive   : 非交互模式（由 ServerUI.exe 调用时自动启用）
 # -SkipCommitLog    : 跳过提交日志拉取（GUI中有【跳过更新日志】复选框对应）
-param([switch]$FullSync, [switch]$NonInteractive, [switch]$SkipCommitLog)
+param([switch]$FullSync, [switch]$NonInteractive, [switch]$SkipCommitLog, [switch]$UseMirror)
 
 # ---- 全局设置 ----
 # 出错时继续运行，不要因为一个小错误就中断整个更新
@@ -323,26 +323,52 @@ function Invoke-RepositoryRequest($uri, [int]$MaxAttempts = 2, [int]$TimeoutSec 
 # 按延迟分级: ≤800ms 正常 / ≤3000ms 较慢 / >3000ms 极慢 / 无响应 不可达
 # 返回: @{ GitGud=$bool; Gitee=$bool; GitHub=$bool; Codeberg=$bool }
 function Test-SourceAvailability {
+    # v1.914: 测试项目主页 3次命中即视为可用
     $results = @{ GitGud = $false; Gitee = $false; GitHub = $false; Codeberg = $false }
     $latency = @{ GitGud = 0; Gitee = 0; GitHub = 0; Codeberg = 0 }
     
-    Write-Host "[连接检测] 正在快速检测下载源可达性 (GitGud / Gitee / GitHub / Codeberg)..."
-    
-    # 测试 GitGud（主源，中国大陆常被阻断）
+    Write-Host "[连接检测] 正在检测 GitGud (3次命中/10秒)..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-        Invoke-WebRequest -Uri "https://gitgud.io" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
-        $sw.Stop(); $latency.GitGud = $sw.ElapsedMilliseconds
-        $results.GitGud = $true
-    } catch {
-        $sw.Stop(); $latency.GitGud = $sw.ElapsedMilliseconds
-        if ($_.Exception.Response -ne $null) { $results.GitGud = $true }
+    $hits = 0; $attempt = 1
+    do {
+        $remaining = 10 - [math]::Round($sw.Elapsed.TotalSeconds)
+        if ($remaining -le 0) { break }
+        $reqTimeout = [math]::Min(3, $remaining)
+        try {
+            Write-Host "[连接检测]   GitGud 第${attempt}次 (${hits}/3)..."
+            Invoke-WebRequest -Uri "https://gitgud.io/rewio/86JP" -TimeoutSec $reqTimeout -UseBasicParsing -ErrorAction Stop | Out-Null
+            $hits++
+        } catch {
+            if ($_.Exception.Response -ne $null) { $hits++ }
+        }
+        $attempt++
+        if ($hits -ge 3) { break }
+        if ($hits -lt 3 -and $sw.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Seconds 1 }
+    } while ($hits -lt 3 -and $sw.Elapsed.TotalSeconds -lt 10)
+    $sw.Stop()
+    
+    $results.GitGud = ($hits -ge 3)
+    $latency.GitGud = $sw.ElapsedMilliseconds
+    
+    function LatencyLabel($name, $reachable, $ms) {
+        if (-not $reachable) { return "$name 不可达 (超时)" }
+        if ($ms -le 800)    { return "$name 正常 (延迟 ${ms}ms)" }
+        if ($ms -le 3000)   { return "$name 较慢 (延迟 ${ms}ms)" }
+        return "$name 极慢 (延迟 ${ms}ms)"
+    }
+    Write-Host ("[连接检测] " + (LatencyLabel 'GitGud' $results.GitGud $latency.GitGud))
+    
+    if (-not $results.GitGud) {
+        Write-Host "[连接检测] GitGud 不可达 → 普通用户模式，跳过其余源检测。"
+        return $results
     }
     
-    # 测试 Gitee（国内镜像源，国内用户首选）
+    # GitGud 可达 → 上传者模式，继续检测镜像源（为镜像上传做准备）
+    Write-Host "[连接检测] GitGud 可达 → 上传者模式，继续检测镜像源..."
+    
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        Invoke-WebRequest -Uri "https://gitee.com" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        Invoke-WebRequest -Uri "https://gitee.com" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
         $sw.Stop(); $latency.Gitee = $sw.ElapsedMilliseconds
         $results.Gitee = $true
     } catch {
@@ -350,10 +376,9 @@ function Test-SourceAvailability {
         if ($_.Exception.Response -ne $null) { $results.Gitee = $true }
     }
     
-    # 测试 GitHub（国际镜像源）
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        Invoke-WebRequest -Uri "https://github.com" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        Invoke-WebRequest -Uri "https://github.com" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
         $sw.Stop(); $latency.GitHub = $sw.ElapsedMilliseconds
         $results.GitHub = $true
     } catch {
@@ -361,10 +386,9 @@ function Test-SourceAvailability {
         if ($_.Exception.Response -ne $null) { $results.GitHub = $true }
     }
     
-    # 测试 Codeberg（国际镜像备选源）
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        Invoke-WebRequest -Uri "https://codeberg.org" -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop | Out-Null
+        Invoke-WebRequest -Uri "https://codeberg.org" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
         $sw.Stop(); $latency.Codeberg = $sw.ElapsedMilliseconds
         $results.Codeberg = $true
     } catch {
@@ -372,14 +396,6 @@ function Test-SourceAvailability {
         if ($_.Exception.Response -ne $null) { $results.Codeberg = $true }
     }
     
-    # 按延迟分级输出
-    function LatencyLabel($name, $reachable, $ms) {
-        if (-not $reachable) { return "$name 不可达 (超时)" }
-        if ($ms -le 800)    { return "$name 正常 (延迟 ${ms}ms)" }
-        if ($ms -le 3000)   { return "$name 较慢 (延迟 ${ms}ms)" }
-        return "$name 极慢 (延迟 ${ms}ms)"
-    }
-    Write-Host ("[连接检测] " + (LatencyLabel 'GitGud'  $results.GitGud  $latency.GitGud))
     Write-Host ("[连接检测] " + (LatencyLabel 'Gitee'   $results.Gitee   $latency.Gitee))
     Write-Host ("[连接检测] " + (LatencyLabel 'GitHub'  $results.GitHub  $latency.GitHub))
     Write-Host ("[连接检测] " + (LatencyLabel 'Codeberg' $results.Codeberg $latency.Codeberg))
@@ -996,33 +1012,40 @@ try {
     $gmRepoApi = "https://gitgud.io/api/v4/projects/rewio%2F86JPGMTool"
 
     # ================================================================
-    #  连接预检：快速测试下载源可达性 (v1.911)
+    #  连接预检：快速测试下载源可达性 (v1.914)
     # ================================================================
-    # 在中国大陆网络环境下 GitGud 常被阻断，预检可避免浪费数分钟等待时间
+    # v1.914: 支持 -UseMirror 手动强制镜像下载，跳过 GitGud 检测
+    if ($UseMirror) {
+        Write-Host "[镜像下载] 用户手动启用 → 跳过 GitGud 检测，直接使用镜像源。"
+        $sourceAvailability = @{ GitGud = $false; Gitee = $true; GitHub = $true; Codeberg = $true }
+    } else {
+    # 普通用户无需等待镜像源检测，下载时按序尝试即可
     Write-Host ""
     
     # 清理 DNS/网络缓存，确保使用最新解析（避免 CDN 旧缓存导致误判）
     try { ipconfig /flushdns | Out-Null } catch {}
     
     $sourceAvailability = Test-SourceAvailability
+    }
     
     $skipGitGud = -not $sourceAvailability.GitGud
     $mirrorsAvailable = $sourceAvailability.Gitee -or $sourceAvailability.GitHub -or $sourceAvailability.Codeberg
 
     # ---- 根据预检结果决定下载策略 ----
-    # 优先级：GitGud > Gitee(国内镜像) > GitHub > Codeberg > 本地缓存
-    # 只尝试预检确认可达的源，避免浪费时间等待不可达的源
+    # 上传者(GitGud可达) → 使用检测结果精确选择
+    # 普通用户(GitGud不可达) → 按序尝试镜像，让下载本身做超时判断
     $svrPrimaryUrl = $null
     $svrUseAuth = $false
     $svrTimeout = 30
     $svrRetries = 3
     $svrSourceName = ""
+    $svrTryAllMirrors = $false
     
     if ($sourceAvailability.GitGud) {
         Write-Host "[连接检测] GitGud 可达 → 使用主源下载。"
         $svrPrimaryUrl = "https://gitgud.io/api/v4/projects/rewio%2F86JP/repository/archive.zip?sha=main"
         $svrUseAuth = $true
-        $svrTimeout = 60
+        $svrTimeout = 30
         $svrRetries = 5
         $svrSourceName = "GitGud"
     } elseif ($sourceAvailability.Gitee) {
@@ -1041,9 +1064,10 @@ try {
         $svrPrimaryUrl = $MirrorServerUrls[2]
         $svrSourceName = "Codeberg"
     } else {
-        Write-Host "[连接检测] 所有在线源均不可达，将直接使用本地缓存。"
-        Write-Host "[提示] 请检查网络连接或使用备用网络后重试。"
-        $svrSourceName = "本地缓存"
+        # v1.914: 普通用户模式 — 不做预检，下载时按序尝试所有镜像 + 本地缓存兜底
+        Write-Host "[连接检测] GitGud 不可达 (普通用户)，将依次尝试 Gitee → GitHub → Codeberg → 本地缓存。"
+        $svrTryAllMirrors = $true
+        $svrSourceName = "自动选择"
     }
     
     # ================================================================
@@ -1054,11 +1078,38 @@ try {
     $pool.Open()
 
     # ---- 任务 1：下载服务端源码 ZIP ----
-    # v1.911: 根据预检结果智能选择下载源
-    # Gitee 私有仓库需通过 API 下载（base64解码），不走 RunspacePool
+    # v1.914: 普通用户直接按序尝试全部镜像，不做预检
     $svrPS = $null; $svrHandle = $null; $svrOk = $false; $svrSize = "N/A"
     $svrFromGitee = $false
-    if ($svrPrimaryUrl) {
+    if ($svrTryAllMirrors) {
+        # 普通用户：按序尝试 Gitee API → GitHub API → Codeberg Raw → 本地缓存
+        # 每个源独立短超时，不浪费总时间
+        $svrMirrors = @(
+            @{Name="Gitee"; Type="gitee"; Url=$MirrorServerUrls[0]},
+            @{Name="GitHub"; Type="github"; Url=$MirrorServerUrls[1]},
+            @{Name="Codeberg"; Type="codeberg"; Url=$MirrorServerUrls[2]}
+        )
+        foreach ($m in $svrMirrors) {
+            if ($svrOk) { break }
+            try {
+                Write-Host "Server download: 尝试 $($m.Name)..."
+                Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+                if ($m.Type -eq "gitee") { $svrOk = Download-FromGitee $m.Url $TempZip 20 }
+                elseif ($m.Type -eq "github") { $svrOk = Download-FromGitHub "mirrors/ServerS4A12-latest.zip" $TempZip 20 }
+                else { Invoke-WebRequest -Uri $m.Url -OutFile $TempZip -UseBasicParsing -TimeoutSec 20 }
+                $testZip = [System.IO.Compression.ZipFile]::OpenRead($TempZip)
+                if ($testZip.Entries.Count -gt 0) { $svrOk = $true; $testZip.Dispose(); break }
+                $testZip.Dispose()
+            } catch { }
+        }
+        if (-not $svrOk -and (Test-Path $LatestSvr)) {
+            Write-Host "Server download: 所有镜像失败，使用本地缓存。"
+            Copy-Item $LatestSvr $TempZip -Force
+            try { $tz=[System.IO.Compression.ZipFile]::OpenRead($TempZip); if ($tz.Entries.Count -gt 0) { $svrOk = $true }; $tz.Dispose() } catch { }
+        }
+        if ($svrOk) { $svrSize = "$([math]::Round((Get-Item $TempZip).Length/1KB)) KB" }
+        Write-Host "Server download: $(if($svrOk){'OK'}else{'FAILED'}) ($svrSize)"
+    } elseif ($svrPrimaryUrl) {
         if ($svrSourceName -eq "Gitee") {
             # Gitee 私有仓库：用 API 下载，不入池（方便调用 Download-FromGitee）
             $svrFromGitee = $true
@@ -1132,12 +1183,36 @@ try {
         Write-Host "GM download: 正在从 GitGud 主源下载..."
         $gmHandle = $gmPS.BeginInvoke()
     } else {
+        # v1.914: GitGud 不可达 → 直接走镜像链（与服务端逻辑一致）
         $gmOk = $false
         $gmPS.Dispose()
-        Write-Host "GM download: GitGud 不可达 (稍后由镜像回退下载)"
+        $mirrorsAvailable = $sourceAvailability.Gitee -or $sourceAvailability.GitHub -or $sourceAvailability.Codeberg
+        if ($mirrorsAvailable -or $svrTryAllMirrors) {
+            $gmMirrors = @(
+                @{Name="Gitee"; Url=$MirrorGMUrls[0]},
+                @{Name="GitHub"; Url=$MirrorGMUrls[1]},
+                @{Name="Codeberg"; Url=$MirrorGMUrls[2]}
+            )
+            foreach ($m in $gmMirrors) {
+                if ($gmOk) { break }
+                try {
+                    Write-Host "GM download: 尝试 $($m.Name)..."
+                    Remove-Item $gmTempZip -Force -ErrorAction SilentlyContinue
+                    if ($m.Name -eq "Gitee") { $gmOk = Download-FromGitee $m.Url $gmTempZip 20 }
+                    elseif ($m.Name -eq "GitHub") { $gmOk = Download-FromGitHub "mirrors/DfoGmTool-latest.zip" $gmTempZip 20 }
+                    else { Invoke-WebRequest -Uri $m.Url -OutFile $gmTempZip -UseBasicParsing -TimeoutSec 20 }
+                    $testZip = [System.IO.Compression.ZipFile]::OpenRead($gmTempZip)
+                    if ($testZip.Entries.Count -gt 0) { $gmOk = $true; $testZip.Dispose(); break }
+                    $testZip.Dispose()
+                } catch { }
+            }
+        }
+        if (-not $gmOk -and (Test-Path $LatestGM)) {
+            Write-Host "GM download: 所有在线源失败，使用本地缓存。"
+            Copy-Item $LatestGM $gmTempZip -Force
+            try { $tz=[System.IO.Compression.ZipFile]::OpenRead($gmTempZip); if ($tz.Entries.Count -gt 0) { $gmOk = $true }; $tz.Dispose() } catch { }
+        }
     }
-
-    # ---- Gitee 内联下载（API 模式，与 GM 下载并行） ----
     if ($svrFromGitee) {
         Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
         if (Download-FromGitee $svrPrimaryUrl $TempZip 30) {
@@ -1180,22 +1255,20 @@ try {
         } catch { Write-Host "GM ZIP 损坏: $_"; $gmOk = $false }
     }
 
-    # GM 镜像回退 (v1.911: 只尝试预检可达的源，不盲目重试死源)
-    if (-not $gmOk) {
+    # GM 镜像回退 (v1.914)
+    # 普通用户已在主流程尝试全部镜像，仅上传者需要此回退
+    if (-not $gmOk -and -not $svrTryAllMirrors) {
         Write-Host "GM 下载失败，根据预检结果选择备用源..."
         $gmFallbackUrls = @()
         $gmFallbackNames = @()
-        # Gitee GM mirror（国内首选）
         if ($sourceAvailability.Gitee) {
             $gmFallbackUrls += $MirrorGMUrls[0]
             $gmFallbackNames += "Gitee"
         }
-        # GitHub GM mirror
         if ($sourceAvailability.GitHub) {
             $gmFallbackUrls += $MirrorGMUrls[1]
             $gmFallbackNames += "GitHub"
         }
-        # Codeberg mirror
         if ($sourceAvailability.Codeberg) {
             $gmFallbackUrls += $MirrorGMUrls[2]
             $gmFallbackNames += "Codeberg镜像"
@@ -1224,8 +1297,9 @@ try {
     $pool.Close()
     Write-Host "##PROGRESS##20"
 
-    # ---- 镜像回退 (v1.911: 只尝试预检可达的源，不盲目重试死源) ----
-    if (-not $svrOk) {
+    # ---- 镜像回退 (v1.914) ----
+    # 普通用户已在主流程尝试全部镜像，直接跳回退
+    if (-not $svrOk -and -not $svrTryAllMirrors) {
         Write-Host "[回退] $svrSourceName 下载失败/损坏，根据预检结果选择备用源..."
         
         $fallbackUrls = @()

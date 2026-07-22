@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * 镜像上传服务 (MirrorUploadService) — v1.914
+ * 镜像上传服务 (MirrorUploadService) — v1.915
  * ==================================================================
  *
  * 【功能说明】
@@ -26,6 +26,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Threading;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -75,14 +76,24 @@ public class MirrorUploadService
 
     public async Task<bool> CanReachGitGud()
     {
-        try
+        // v1.914: 项目主页3次命中即视为可达
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        int hits = 0;
+        while (DateTime.UtcNow < deadline && hits < 3)
         {
-            var req = new HttpRequestMessage(HttpMethod.Get, "https://gitgud.io/api/v4/projects");
-            req.Headers.Add("PRIVATE-TOKEN", GitGudToken);
-            var resp = await _http.SendAsync(req);
-            return resp.IsSuccessStatusCode;
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var resp = await new HttpClient { Timeout = TimeSpan.FromSeconds(3) }
+                    .GetAsync("https://gitgud.io/rewio/86JP", cts.Token);
+                if (resp.IsSuccessStatusCode) hits++;
+                else hits++;
+            }
+            catch { }
+            if (hits >= 3) break;
+            if (DateTime.UtcNow < deadline) await Task.Delay(1000);
         }
-        catch { return false; }
+        return hits >= 3;
     }
     public async Task<bool> CanReachGitHub() => await CanReach("https://api.github.com");
     public async Task<bool> CanReachGitee() => await CanReach("https://gitee.com");

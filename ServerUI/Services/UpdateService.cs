@@ -209,10 +209,12 @@ public class UpdateService
      *   workDir   — PowerShell 的工作目录（ServerS4A12-AUM 目录）
      *   scriptDir — update.ps1 所在目录（AUM管理组件\）
      */
-    public async Task RunIncremental(string workDir, string scriptDir, bool skipCommitLog = false)
+    public async Task RunIncremental(string workDir, string scriptDir, bool skipCommitLog = false, bool useMirror = false)
     {
-        var args = skipCommitLog ? "-SkipCommitLog" : "";
-        await RunPowerShell(workDir, Path.Combine(scriptDir, "update.ps1"), args);
+        var args = "";
+        if (skipCommitLog) args += "-SkipCommitLog ";
+        if (useMirror) args += "-UseMirror ";
+        await RunPowerShell(workDir, Path.Combine(scriptDir, "update.ps1"), args.Trim());
     }
 
     /*
@@ -221,9 +223,11 @@ public class UpdateService
      * 原理: update.ps1 带上 -FullSync 参数，对比整个仓库历史
      * 调用时机: 用户点击 [全量更新] 按钮
      */
-    public async Task RunFull(string workDir, string scriptDir, bool skipCommitLog = false)
+    public async Task RunFull(string workDir, string scriptDir, bool skipCommitLog = false, bool useMirror = false)
     {
-        var args = "-FullSync" + (skipCommitLog ? " -SkipCommitLog" : "");
+        var args = "-FullSync";
+        if (skipCommitLog) args += " -SkipCommitLog";
+        if (useMirror) args += " -UseMirror";
         await RunPowerShell(workDir, Path.Combine(scriptDir, "update.ps1"), args);
     }
 

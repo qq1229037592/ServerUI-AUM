@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- *     主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.914
+ *     主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.915
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.914】修复 Codeberg 上传令牌，改进 Win10 兼容性
-    const string VER = "1.914";
+    // 【v1.915】镜像下载开关 + 上传者判定优化
+    const string VER = "1.915";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -145,7 +145,7 @@ public partial class MainForm : Form
     // 日志工具栏按钮 (复制/清空) + 顶部安装 SDK 按钮 + GM 工具按钮
     Button btCp, btCl, btSdk, btGm;
     // 复选框 (DX11/DX12/去水印/清理冗余DB/跳过更新日志)
-    CheckBox cbDx, cbDt, cbDw, cbCl, cbSkipLog;
+    CheckBox cbDx, cbDt, cbDw, cbCl, cbSkipLog, cbMirror;
     // 存档列表
     ListView lv;
     // 日志文本框
@@ -1217,6 +1217,25 @@ public partial class MainForm : Form
         };
         lbar.Controls.Add(cbSkipLog);
         cbSkipLog.Location = new Point(lbar.Width - 350, 6);
+
+        // 镜像下载复选框 (v1.914: 与【跳过更新日志】同风格)
+        cbMirror = new CheckBox
+        {
+            Text = "镜像下载",
+            ForeColor = Or, BackColor = Color.Transparent,
+            Font = new Font("Microsoft YaHei", 8f, FontStyle.Bold),
+            Cursor = Cursors.Hand, AutoSize = true,
+            CheckAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(2, 0, 0, 0),
+            MinimumSize = new Size(0, 22)
+        };
+        cbMirror.CheckedChanged += (s, e) =>
+        {
+            Lg(">>> [镜像下载] " + (cbMirror.Checked ? "已启用 — 跳过GitGud直接使用镜像源" : "已关闭"),
+                cbMirror.Checked ? Gn : Txt2);
+        };
+        lbar.Controls.Add(cbMirror);
+        cbMirror.Location = new Point(lbar.Width - 460, 6);
         lbar.Controls.Add(btCp);
         lbar.Controls.Add(btCl);
         lbPg.Location = new Point(10, 10);
@@ -1227,6 +1246,7 @@ public partial class MainForm : Form
         lbar.Resize += (s, e) =>
         {
             cbSkipLog.Location = new Point(lbar.Width - 350, 6);
+            cbMirror.Location = new Point(lbar.Width - 460, 6);
             btCp.Location = new Point(lbar.Width - 200, 4);
             btCl.Location = new Point(lbar.Width - 95, 4);
         };
@@ -1487,7 +1507,8 @@ public partial class MainForm : Form
             // 确认 DfoServer 进程运行后，5 秒后隐藏其控制台窗口
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
-                await System.Threading.Tasks.Task.Delay(5000);
+        // v1.914: 等待15秒确保 update.ps1 的 GitGud 检测先完成（其窗口为10秒）
+        await System.Threading.Tasks.Task.Delay(15000);
                 Invoke(new Action(() =>
                 { try { ServerService.HideDfoServerWindow(); } catch { } }));
             });
@@ -2574,7 +2595,7 @@ public partial class MainForm : Form
         try
         {
             await _up.RunIncremental(
-                Path.Combine(_ad, "ServerS4A12-AUM"), _ad, cbSkipLog.Checked);
+                Path.Combine(_ad, "ServerS4A12-AUM"), _ad, cbSkipLog.Checked, cbMirror.Checked);
         }
         finally
         {
@@ -2615,7 +2636,7 @@ public partial class MainForm : Form
         try
         {
             await _up.RunFull(
-                Path.Combine(_ad, "ServerS4A12-AUM"), _ad, cbSkipLog.Checked);
+                Path.Combine(_ad, "ServerS4A12-AUM"), _ad, cbSkipLog.Checked, cbMirror.Checked);
         }
         finally
         {
