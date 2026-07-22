@@ -1,4 +1,4 @@
 @echo off
 title AUM-Manager-SelfUpdate
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0æ›´æ–°AUM.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0¸üÐÂAUM.ps1"
 pause
