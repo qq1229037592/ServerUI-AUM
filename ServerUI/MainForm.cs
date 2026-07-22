@@ -2381,8 +2381,8 @@ public partial class MainForm : Form
 
         try
         {
-            await _au.RunUpdateAsync(Path.Combine(_bd,
-                Directory.Exists(Path.Combine(_bd, "ServerUI"))
+            await _au.RunUpdateAsync(Path.Combine(_ad,
+                Directory.Exists(Path.Combine(_ad, "ServerUI"))
                     ? "ServerUI"
                     : "."));
         }
