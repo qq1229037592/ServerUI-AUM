@@ -49,6 +49,7 @@ ServerS4A12-管理工具包/
 ├── 本地游戏S4.bat                 # 游戏启动脚本
 ├── AUM管理组件\
 │   ├── update.ps1                 # 核心脚本，增量/全量更新脚本/输出相关
+│   ├── 进行本地编译.ps1            # 进行本地编译脚本，兜底使用
 │   ├── save-quick.ps1             # 快速换挡脚本
 │   ├── save-switch.ps1            # 存档管理脚本
 │   ├── dotnet-install.ps1         # .NET SDK官方安装器
