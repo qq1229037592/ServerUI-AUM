@@ -10,7 +10,7 @@
  * 【执行流程】
  *   1. 注册 UnhandledException / ThreadException 全局异常兜底
  *      （避免程序崩溃时悄无声息地退出，让用户看到错误原因）
- *   2. SetHighDpiMode(SystemAware) — 适配高分屏（Win10/Win11 4K 显示器）
+ *   2. SetHighDpiMode(PerMonitorV2) — 适配高分屏（与 app.manifest 一致）
  *   3. EnableVisualStyles — 启用 XP 风格控件外观
  *   4. Application.Run(new MainForm()) — 启动主窗口消息循环
  * 
@@ -42,6 +42,10 @@ static class Program
     [STAThread]
     static void Main()
     {
+        // v1.913: 启动前先写日志（捕获 DPI 初始化之前的无声崩溃）
+        var startupLog = Path.Combine(AppContext.BaseDirectory, "ServerUI-启动日志.txt");
+        try { File.WriteAllText(startupLog, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " 启动中...\n", System.Text.Encoding.UTF8); } catch { }
+
         // ===== 全局异常兜底 =====
         // 作用: 当程序发生未捕获的异常时，弹出错误提示 + 写入崩溃日志
         // 如果删除这段代码，程序崩溃时用户只会看到闪退，无法知道原因
@@ -56,11 +60,9 @@ static class Program
         try
         {
             // ===== 高 DPI 适配 =====
-            // 作用: 让程序在 4K/2K 高分屏上不模糊、不错位
-            // SystemAware: 程序启动时检测一次系统 DPI，之后不再自动调整
-            // 替代方案: PerMonitorV2（每个显示器独立 DPI）可能导致布局问题
-            // 必须在 Application.Run 之前调用，否则无效
-            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            // v1.913: 改用 PerMonitorV2 与 app.manifest 的 <dpiAwareness>PerMonitorV2</dpiAwareness> 保持一致
+            // SystemAware 与 manifest 的 PerMonitorV2 冲突会导致 Win10 上窗口不可见/无响应
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
             // 启用 XP 风格的控件外观（让按钮、滚动条等看起来现代一点）
             Application.EnableVisualStyles();

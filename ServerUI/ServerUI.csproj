@@ -7,7 +7,7 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <Version>1.913.0</Version>
