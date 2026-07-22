@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- *     主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.915
+ *     主窗口类 (MainForm.cs) — ServerS4A12 GUI 管理器 v1.916
  * ==================================================================
  *
  * 【功能概览】
@@ -112,8 +112,8 @@ public partial class MainForm : Form
 
     // VER = 当前工具版本号 — 显示在窗口标题和启动日志中
     // 每次发版时只需修改这一个值
-    // 【v1.915】镜像下载开关 + 上传者判定优化
-    const string VER = "1.915";
+    // 【v1.916】存档操作自动停服/重启
+    const string VER = "1.916";
 
     // ===== 路径计算 =====
     // _bd = EXE 所在目录 (BaseDirectory)
@@ -976,32 +976,36 @@ public partial class MainForm : Form
         btSC.Click += (s, e) =>
         {
             Lg(">>> 点击了储存当前存档", Color.CornflowerBlue);
-            SC();
+            DoArchiveOp(() => { SC(); return true; });
         };
         // 导入外部 .db 文件
         btIm.Click += (s, e) =>
         {
             Lg(">>> 点击了导入存档", Color.CornflowerBlue);
-            IA();
+            DoArchiveOp(() => { IA(); return true; });
         };
         // 导出当前存档
         btEx.Click += (s, e) =>
         {
             Lg(">>> 点击了导出当前", Color.CornflowerBlue);
-            EC();
+            DoArchiveOp(() => { EC(); return true; });
         };
         // 撤销上一次换挡操作
         btUd.Click += (s, e) =>
         {
             Lg(">>> 点击了撤销换挡", Color.CornflowerBlue);
-            if (_ar.UndoSwap(_ad))
+            DoArchiveOp(() =>
             {
+                if (!_ar.UndoSwap(_ad))
+                {
+                    Lg("无备份", Color.Gold);
+                    return false;
+                }
                 LS("已撤销");
                 RA();
-                if (cbCl != null && cbCl.Checked)
-                    CleanRedundantDb();
-            }
-            else Lg("无备份", Color.Gold);
+                if (cbCl != null && cbCl.Checked) CleanRedundantDb();
+                return true;
+            });
         };
 
         ab.Controls.Add(btOD, 0, 0);
@@ -1061,7 +1065,7 @@ public partial class MainForm : Form
         dz.DoubleClick += (s, e) =>
         {
             Lg(">>> 双击拖拽区，储存当前存档", Color.CornflowerBlue);
-            SC();
+            DoArchiveOp(() => { SC(); return true; });
         };
         dz.DragEnter += (s, e) =>
         {
@@ -1078,11 +1082,15 @@ public partial class MainForm : Form
             var fs = (string[])e.Data.GetData(DataFormats.FileDrop);
             Lg(">>> 拖拽换挡: " + Path.GetFileName(fs[0]),
                 Color.CornflowerBlue);
-            DoSafeSwap(fs[0], "拖拽换挡完成");
+            DoArchiveOp(() =>
+            {
+                DoSwapCore(fs[0], "拖拽换挡完成");
+                return true;
+            });
         };
         lbDr = new Label
         {
-            Text = "📁 拖拽 .db 文件到此处 = 快速替换存档 (双击此处 = 储存当前)",
+            Text = "📁 拖拽 .db 文件到此处 = 快速替换存档",
             ForeColor = Txt2,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleCenter,
@@ -1682,9 +1690,12 @@ public partial class MainForm : Form
         // 左键双击 → 切换存档
         if (e.Button == MouseButtons.Left && e.Clicks == 2)
         {
-            DoSafeSwap(
-                Path.Combine(_ad, "存档管理", "切换库", nm),
-                "已切换到: " + nm);
+            var path = Path.Combine(_ad, "存档管理", "切换库", nm);
+            DoArchiveOp(() =>
+            {
+                DoSwapCore(path, "已切换到: " + nm);
+                return true;
+            });
         }
     }
 
@@ -1775,46 +1786,46 @@ public partial class MainForm : Form
     }
 
     /*
-     * 安全换挡 (DoSafeSwap)
+     * 存档操作包装器 (DoArchiveOp) — v1.916
      *
-     * 当 [清理冗余DB] 处于勾选状态时:
-     *   1. 检测服务端是否在运行
-     *   2. 如果在运行 → 自动停止 (避免文件占用冲突)
-     *   3. 执行换挡操作
-     *   4. 刷新存档列表 + 清理冗余文件
-     *   5. 如果之前停止了服务端 → 自动重启
-     *
-     * 参数:
-     *   srcPath — 来源 .db 文件的完整路径
-     *   msg     — 成功后的日志消息
+     * 当服务端运行时，自动停止 → 执行操作 → 自动重启。
+     * 服务端未运行时直接执行操作，不做启停。
      */
-    void DoSafeSwap(string srcPath, string msg)
+    void DoArchiveOp(Func<bool> op)
     {
-        bool wasRunning = false;
-        if (cbCl.Checked && _sv.IsRunning)
+        bool wasRunning = _sv.IsRunning;
+        if (wasRunning)
         {
-            wasRunning = true;
-            Lg(">>> [清理冗余DB] 服务端运行中，自动停止以切换存档...",
-                Or);
+            Lg(">>> 检测到服务端运行中，自动停止以操作存档...", Or);
             _sv.Stop();
+            System.Threading.Thread.Sleep(600);
         }
 
-        _ar.Swap(_ad, srcPath);
-        LS(msg);
-        RA();
-        TB();
-        if (cbCl != null && cbCl.Checked) CleanRedundantDb();
+        bool ok = op();
 
         if (wasRunning)
         {
-            Lg(">>> [清理冗余DB] 正在自动重启服务端...", Gn);
-            // 延迟 600ms 确保旧进程完全退出后再重启
+            Lg(">>> 正在自动重启服务端...", Gn);
             System.Threading.Tasks.Task.Run(async () =>
             {
                 await System.Threading.Tasks.Task.Delay(600);
                 Invoke(new Action(Go));
             });
         }
+
+        if (ok && !cbCl.Checked)
+        {
+            Lg(">>> 已切换存档。如果无法登录服务端或网络连接中断，请勾选【清理冗余DB】后重试。", Or);
+        }
+    }
+
+    void DoSwapCore(string srcPath, string msg)
+    {
+        _ar.Swap(_ad, srcPath);
+        LS(msg);
+        RA();
+        TB();
+        if (cbCl != null && cbCl.Checked) CleanRedundantDb();
     }
 
     /*
@@ -1855,7 +1866,11 @@ public partial class MainForm : Form
         var fs = (string[])e.Data.GetData(DataFormats.FileDrop);
         Lg(">>> 拖拽换挡: " + Path.GetFileName(fs[0]),
             Color.CornflowerBlue);
-        DoSafeSwap(fs[0], "拖拽换挡完成");
+        DoArchiveOp(() =>
+        {
+            DoSwapCore(fs[0], "拖拽换挡完成");
+            return true;
+        });
     }
 
     // =================================================================
