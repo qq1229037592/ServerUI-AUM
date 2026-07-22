@@ -1,6 +1,6 @@
 /*
  * ==================================================================
- * 镜像上传服务 (MirrorUploadService) — v1.911
+ * 镜像上传服务 (MirrorUploadService) — v1.914
  * ==================================================================
  *
  * 【功能说明】
@@ -53,7 +53,7 @@ public class MirrorUploadService
 
     public event Action<string> OutputReceived;
 
-    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) };
     static MirrorUploadService() { _http.DefaultRequestHeaders.Add("User-Agent", "ServerUI-Mirror/1.0"); }
 
     static string Decode2(string b64)
