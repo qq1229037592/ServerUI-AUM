@@ -223,7 +223,7 @@ public partial class MainForm : Form
         EnableDoubleBuffer(this);
 
         // Keep text at its designed DPI-aware size. Shrinking it during resize caused clipped labels.
-        Load += async (s, e) => { Ck(); Rf(); await CheckBasicNetwork(); await CheckAUMUpdate(); };
+        Load += async (s, e) => { Ck(); Rf(); CheckDnfExists(); await CheckBasicNetwork(); await CheckAUMUpdate(); };
     }
 
     // =================================================================
@@ -1298,10 +1298,10 @@ public partial class MainForm : Form
             });
         };
 
-        // 镜像链接 (GitHub, 使用科技蓝 Ac)
+        // ServerUI-AUM 仓库链接 (使用科技蓝 Ac)
         var lm = new LinkLabel
         {
-            Text = "🔷 镜像: GitHub",
+            Text = "ServerUI-AUM仓库",
             ForeColor = Ac, LinkColor = Ac,
             ActiveLinkColor = Color.White,
             AutoSize = true, Anchor = AnchorStyles.None,
@@ -1309,8 +1309,8 @@ public partial class MainForm : Form
         };
         lm.LinkClicked += (s, e) =>
         {
-            Lg(">>> 打开 GitHub 镜像仓库", Color.CornflowerBlue);
-            Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = UpdateService.MirrorGitHubPage, UseShellExecute = true });
+            Lg(">>> 打开 ServerUI-AUM 仓库", Color.CornflowerBlue);
+            Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "https://github.com/118coder/ServerUI-AUM-S4A12", UseShellExecute = true });
         };
 
         // 仓库链接 (GitGud + Codeberg, 使用强调色)
@@ -2246,6 +2246,15 @@ public partial class MainForm : Form
         btSdk.Enabled = true;
         btSdk.Text = "安装SDK";
         await System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    void CheckDnfExists()
+    {
+        var dnfPath = Path.Combine(_gr, "DNF.exe");
+        if (!File.Exists(dnfPath))
+            Lg("[警告] 本目录下并不存在 DNF.exe，请确认解压位置是否正确。当前目录: " + _gr, Or);
+        else
+            Lg("[检查] DNF.exe 已找到: " + dnfPath, Gn);
     }
 
     async System.Threading.Tasks.Task CheckBasicNetwork()
