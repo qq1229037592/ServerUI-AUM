@@ -157,12 +157,14 @@ Write-Host "[5/5] 替换文件..."
 Get-Process -Name "ServerUI" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
+$parentDir = (Get-Item $ScriptRoot).Parent.FullName
+
 if (Test-Path $newScExe) {
-    Copy-Item $newScExe (Join-Path $ScriptRoot "开始游戏-ServerUI.exe") -Force
-    Write-Host "  开始游戏-ServerUI.exe: OK"
+    Copy-Item $newScExe (Join-Path $parentDir "开始游戏-ServerUI.exe") -Force
+    Write-Host "  开始游戏-ServerUI.exe -> 上层目录: OK"
 }
-Copy-Item $newExe (Join-Path $ScriptRoot "ServerUI-无依赖版.exe") -Force
-Write-Host "  ServerUI-无依赖版.exe: OK"
+Copy-Item $newExe (Join-Path $parentDir "ServerUI-无依赖版.exe") -Force
+Write-Host "  ServerUI-无依赖版.exe -> 上层目录: OK"
 
 $localSrc = Join-Path $ScriptRoot "ServerUI"
 if (-not (Test-Path $localSrc)) { New-Item -ItemType Directory -Path $localSrc -Force | Out-Null }
