@@ -517,7 +517,7 @@ public class SelfUpdateService
             foreach (var f in Directory.GetFiles(repoRoot, pattern))
             {
                 var name = Path.GetFileName(f);
-                if (name.Contains("GameLog") || name.Contains("运行日志")) continue;
+                if (name.Contains("GameLog") || name.Contains("运行日志") || name.Contains("本地游戏S4")) continue;
                 var dest = Path.Combine(userRoot, name);
                 var srcInfo = new FileInfo(f);
 
@@ -599,7 +599,7 @@ public class SelfUpdateService
                 foreach (var f in Directory.GetFiles(gameRoot, "*.bat"))
                 {
                     var name = Path.GetFileName(f);
-                    if (name.Contains("GameLog") || name.Contains("运行日志") || name.Contains("DNF")) continue;
+                    if (name.Contains("GameLog") || name.Contains("运行日志") || name.Contains("DNF") || name.Contains("本地游戏S4")) continue;
                     if (File.Exists(Path.Combine(aumDir, name)))
                     {
                         try { File.Delete(f); } catch { }
