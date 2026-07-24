@@ -16,7 +16,11 @@ public class GiteeAdapter : IMirrorPlatform
     static string Token => Encoding.UTF8.GetString(Convert.FromBase64String(Encoding.UTF8.GetString(Convert.FromBase64String(TokenB64))));
     string ApiBase => $"https://gitee.com/api/v5/repos/{Repo}/contents";
 
-    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    static readonly HttpClient _http = new(new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate })
+    {
+        Timeout = TimeSpan.FromSeconds(180)
+    };
+    static GiteeAdapter() { _http.DefaultRequestHeaders.Add("User-Agent", "ServerUI-Mirror/1.0"); }
 
     public async Task<bool> UploadPackageAsync(string pkgName, byte[] zip, string sha)
     {
@@ -86,31 +90,29 @@ public class GiteeAdapter : IMirrorPlatform
             var resp = await _http.SendAsync(postReq);
             if (resp.IsSuccessStatusCode) return true;
 
+            // POST 失败时（任意状态码），尝试获取 SHA 后用 PUT 更新
             var status = (int)resp.StatusCode;
-            if (status == 409 || status == 422)
+            var getReq = new HttpRequestMessage(HttpMethod.Get, $"{url}?access_token={Token}");
+            var getResp = await _http.SendAsync(getReq);
+            if (getResp.IsSuccessStatusCode)
             {
-                var getReq = new HttpRequestMessage(HttpMethod.Get, $"{url}?access_token={Token}");
-                var getResp = await _http.SendAsync(getReq);
-                if (getResp.IsSuccessStatusCode)
+                var getJson = await getResp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(getJson);
+                if (doc.RootElement.TryGetProperty("sha", out var fileSha))
                 {
-                    var getJson = await getResp.Content.ReadAsStringAsync();
-                    using var doc = JsonDocument.Parse(getJson);
-                    if (doc.RootElement.TryGetProperty("sha", out var fileSha))
+                    using var bodyDoc = JsonDocument.Parse(body);
+                    var putBody = JsonSerializer.Serialize(new
                     {
-                        using var bodyDoc = JsonDocument.Parse(body);
-                        var putBody = JsonSerializer.Serialize(new
-                        {
-                            access_token = Token,
-                            content = bodyDoc.RootElement.TryGetProperty("content", out var c) ? c.GetString() : "",
-                            message = bodyDoc.RootElement.TryGetProperty("message", out var m) ? m.GetString() : "update",
-                            sha = fileSha.GetString(),
-                            branch = "main"
-                        });
-                        var putReq = new HttpRequestMessage(HttpMethod.Put, url);
-                        putReq.Content = new StringContent(putBody, Encoding.UTF8, "application/json");
-                        resp = await _http.SendAsync(putReq);
-                        return resp.IsSuccessStatusCode;
-                    }
+                        access_token = Token,
+                        content = bodyDoc.RootElement.TryGetProperty("content", out var c) ? c.GetString() : "",
+                        message = bodyDoc.RootElement.TryGetProperty("message", out var m) ? m.GetString() : "update",
+                        sha = fileSha.GetString(),
+                        branch = "main"
+                    });
+                    var putReq = new HttpRequestMessage(HttpMethod.Put, url);
+                    putReq.Content = new StringContent(putBody, Encoding.UTF8, "application/json");
+                    resp = await _http.SendAsync(putReq);
+                    return resp.IsSuccessStatusCode;
                 }
             }
             return false;
@@ -118,8 +120,49 @@ public class GiteeAdapter : IMirrorPlatform
         catch { return false; }
     }
 
-    public Task CleanupOldPackagesAsync(int keepCount = 5)
+    public async Task<bool> UploadChangelogAsync(byte[] data, string sha, string message)
     {
-        return Task.CompletedTask;
+        try
+        {
+            // 显式编码中文文件名，避免 Uri 构造时的编码歧义
+            var encodedName = Uri.EscapeDataString("更新日志.txt");
+            return await UploadFileAsync("mirrors/" + encodedName, data, message);
+        }
+        catch { return false; }
+    }
+
+    public async Task CleanupOldPackagesAsync(int keepCount = 5)
+    {
+        try
+        {
+            var url = $"{ApiBase}/mirrors?access_token={Token}&ref=main";
+            var getReq = new HttpRequestMessage(HttpMethod.Get, url);
+            var getResp = await _http.SendAsync(getReq);
+            if (!getResp.IsSuccessStatusCode) return;
+
+            var json = await getResp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var files = doc.RootElement.EnumerateArray()
+                .Select(f => (Name: f.TryGetProperty("name", out var n) ? n.GetString() : "",
+                              Sha: f.TryGetProperty("sha", out var s) ? s.GetString() : ""))
+                .Where(f => f.Name.StartsWith("ServerS4A12-") && f.Name.EndsWith(".zip"))
+                .OrderByDescending(f => f.Name)
+                .ToList();
+
+            foreach (var f in files.Skip(keepCount))
+            {
+                var delBody = JsonSerializer.Serialize(new
+                {
+                    access_token = Token,
+                    message = "清理旧镜像",
+                    sha = f.Sha,
+                    branch = "main"
+                });
+                var delReq = new HttpRequestMessage(HttpMethod.Delete, $"{ApiBase}/mirrors/{f.Name}?access_token={Token}");
+                delReq.Content = new StringContent(delBody, Encoding.UTF8, "application/json");
+                await _http.SendAsync(delReq);
+            }
+        }
+        catch { }
     }
 }

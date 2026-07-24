@@ -1,8 +1,7 @@
 ﻿# v1.917: 存档管理脚本 — 列出切换库中所有 .db 存档、切换/保存操作，操作时自动停服/重启
 $ErrorActionPreference = "Continue"
 $ScriptRoot = $PSScriptRoot
-if ((Get-Item $ScriptRoot).Name -eq 'ps1核心' -or (Get-Item $ScriptRoot).Name -eq '旧版ps1') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
-if ((Get-Item $ScriptRoot).Name -eq '旧版ps1' -or (Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
+if ((Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
 $SwitchDir = Join-Path $ScriptRoot "存档管理\切换库"
 $DbTarget = Join-Path $ScriptRoot "ServerS4A12-AUM\dist\win-x64\Data\inventory.db"
 $BackupDir = Join-Path $ScriptRoot "存档管理\备份存档"

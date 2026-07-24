@@ -125,6 +125,41 @@ public class GitHubAdapter : IMirrorPlatform
         catch { return false; }
     }
 
+    public async Task<bool> UploadChangelogAsync(byte[] data, string sha, string message)
+    {
+        try
+        {
+            var path = "mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt";
+            var url = $"https://api.github.com/repos/{Repo}/contents/{path}";
+
+            string existingSha = null;
+            try
+            {
+                var getReq = new HttpRequestMessage(HttpMethod.Get, url);
+                getReq.Headers.Add("Authorization", "token " + Token);
+                var getResp = await _http.SendAsync(getReq);
+                if (getResp.IsSuccessStatusCode)
+                {
+                    var getJson = await getResp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(getJson);
+                    if (doc.RootElement.TryGetProperty("sha", out var s))
+                        existingSha = s.GetString();
+                }
+            }
+            catch { }
+
+            var b64 = Convert.ToBase64String(data);
+            var body = JsonSerializer.Serialize(new { message, content = b64, sha = existingSha, branch = "main" });
+
+            var putReq = new HttpRequestMessage(HttpMethod.Put, url);
+            putReq.Headers.Add("Authorization", "token " + Token);
+            putReq.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            var resp = await _http.SendAsync(putReq);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
     public async Task CleanupOldPackagesAsync(int keepCount = 5)
     {
         try

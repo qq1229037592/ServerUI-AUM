@@ -7,34 +7,34 @@ start /min "" cmd.exe /c "%~f0" _go
 exit /b
 
 :main
-title DNF µ¥»úÓÎÏ· - Æô¶¯½Å±¾
+title DNF ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï· - ï¿½ï¿½ï¿½ï¿½ï¿½Å±ï¿½
 set "BASE=%~dp0"
 
-rem ±£´æµ±Ç° cmd.exe µÄ PID£¬ºóÌ¨¼à¿ØÓÃ
+rem ï¿½ï¿½ï¿½æµ±Ç° cmd.exe ï¿½ï¿½ PIDï¿½ï¿½ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½ï¿½ï¿?
 powershell -NoProfile -ExecutionPolicy Bypass -File "%BASE%ps1ºËÐÄ\get_pid.ps1"
 
-rem ºóÌ¨¼à¿Ø: ´°¿Ú¹Ø±ÕÊ±¹Ø±Õ·þÎñ¶Ë
+rem ï¿½ï¿½Ì¨ï¿½ï¿½ï¿? ï¿½ï¿½ï¿½Ú¹Ø±ï¿½Ê±ï¿½Ø±Õ·ï¿½ï¿½ï¿½ï¿?
 start /b "" powershell -NoProfile -ExecutionPolicy Bypass -File "%BASE%ps1ºËÐÄ\dnf_monitor.ps1"
 
 echo ========================================
-echo   DNF µ¥»úÓÎÏ· - Ò»¼üÆô¶¯½Å±¾
+echo   DNF ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï· - Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Å±ï¿½
 echo ========================================
 echo.
 
-echo [²éÕÒ] start-server.bat...
+echo [ï¿½ï¿½ï¿½ï¿½] start-server.bat...
 set "SRV_BAT="
 for /f "delims=" %%i in ('dir /s /b "%BASE%ServerS4A12-AUM\start-server.bat" 2^>nul') do set "SRV_BAT=%%i"
 if not defined SRV_BAT (
-    echo [´íÎó] Î´ÕÒµ½ start-server.bat
-    echo   ÇëÈ·ÈÏ ServerS4A12-AUM Ä¿Â¼ÏÂ´æÔÚ start-server.bat
-    echo   Èç¹û²»´æÔÚ£¬ÇëÔÚ ServerUI ÖÐÖ´ÐÐÒ»´Î¸üÐÂ¡£
+    echo [ï¿½ï¿½ï¿½ï¿½] Î´ï¿½Òµï¿½ start-server.bat
+    echo   ï¿½ï¿½È·ï¿½ï¿½ ServerS4A12-AUM Ä¿Â¼ï¿½Â´ï¿½ï¿½ï¿½ start-server.bat
+    echo   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú£ï¿½ï¿½ï¿½ï¿½ï¿?ServerUI ï¿½ï¿½Ö´ï¿½ï¿½Ò»ï¿½Î¸ï¿½ï¿½Â¡ï¿½
     pause
     exit /b
 )
 echo   OK: !SRV_BAT!
 
 echo.
-echo [²éÕÒ] DNF.exe...
+echo [ï¿½ï¿½ï¿½ï¿½] DNF.exe...
 set "CLI_EXE="
 for /f "delims=" %%i in ('dir /s /b "%BASE%DNF.exe" 2^>nul') do set "CLI_EXE=%%i"
 if defined CLI_EXE goto found_cli
@@ -42,8 +42,8 @@ for /f "delims=" %%i in ('dir /s /b "%BASE%..\DNF.exe" 2^>nul') do set "CLI_EXE=
 if defined CLI_EXE goto found_cli
 for /f "delims=" %%i in ('dir /s /b "%BASE%..\..\DNF.exe" 2^>nul') do set "CLI_EXE=%%i"
 if defined CLI_EXE goto found_cli
-echo [´íÎó] Î´ÕÒµ½ DNF.exe
-echo   ÇëÔÚ½Å±¾ËùÔÚÄ¿Â¼»òÉÏ¼¶Ä¿Â¼·ÅÖÃ DNF.exe ÓÎÏ·¿Í»§¶Ë¡£
+echo [ï¿½ï¿½ï¿½ï¿½] Î´ï¿½Òµï¿½ DNF.exe
+echo   ï¿½ï¿½ï¿½Ú½Å±ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿Â¼ï¿½ï¿½ï¿½Ï¼ï¿½Ä¿Â¼ï¿½ï¿½ï¿½ï¿½ DNF.exe ï¿½ï¿½Ï·ï¿½Í»ï¿½ï¿½Ë¡ï¿½
 pause
 exit /b
 
@@ -52,22 +52,22 @@ echo   OK: !CLI_EXE!
 for %%i in ("!CLI_EXE!") do set "CLI_DIR=%%~dpi"
 
 set "CLI_BAT="
-if exist "!CLI_DIR!±¾µØÓÎÏ·S4.bat" (
-    set "CLI_BAT=!CLI_DIR!±¾µØÓÎÏ·S4.bat"
-) else if exist "!CLI_DIR!µ¥»úÓÎÏ·Æô¶¯.bat" (
-    set "CLI_BAT=!CLI_DIR!µ¥»úÓÎÏ·Æô¶¯.bat"
+if exist "!CLI_DIR!ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï·S4.bat" (
+    set "CLI_BAT=!CLI_DIR!ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï·S4.bat"
+) else if exist "!CLI_DIR!ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï·ï¿½ï¿½ï¿½ï¿½.bat" (
+    set "CLI_BAT=!CLI_DIR!ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï·ï¿½ï¿½ï¿½ï¿½.bat"
 )
 if defined CLI_BAT (
-    echo   ¿Í»§¶Ë½Å±¾: !CLI_BAT!
+    echo   ï¿½Í»ï¿½ï¿½Ë½Å±ï¿½: !CLI_BAT!
 )
 
 echo.
-echo [1/2] Æô¶¯·þÎñ¶Ë...
+echo [1/2] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿?..
 > "%temp%\dnf_srv.vbs" echo Set ws=CreateObject("WScript.Shell"^):ws.Run """!SRV_BAT!""",0,False
 cscript //nologo "%temp%\dnf_srv.vbs"
 del "%temp%\dnf_srv.vbs"
 
-echo   µÈ´ý·þÎñ¶Ë¾ÍÐ÷ (¶Ë¿Ú 7001)...
+echo   ï¿½È´ï¿½ï¿½ï¿½ï¿½ï¿½Ë¾ï¿½ï¿½ï¿?(ï¿½Ë¿ï¿½ 7001)...
 set /a COUNT=0
 :wait_srv
 timeout /t 2 /nobreak >nul
@@ -75,13 +75,13 @@ netstat -an | findstr ":7001 .*LISTENING" >nul 2>&1
 if not errorlevel 1 goto srv_ready
 set /a COUNT+=2
 if !COUNT! lss 30 goto wait_srv
-echo [´íÎó] µÈ´ý³¬Ê± (30Ãë)£¬¶Ë¿Ú 7001 Î´¾ÍÐ÷
+echo [ï¿½ï¿½ï¿½ï¿½] ï¿½È´ï¿½ï¿½ï¿½Ê± (30ï¿½ï¿½)ï¿½ï¿½ï¿½Ë¿ï¿½ 7001 Î´ï¿½ï¿½ï¿½ï¿½
 :srv_ready
-echo   ·þÎñ¶ËÒÑ¾ÍÐ÷ (µÈ´ý !COUNT! Ãë)
+echo   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¾ï¿½ï¿½ï¿?(ï¿½È´ï¿½ !COUNT! ï¿½ï¿½)
 timeout /t 3 /nobreak >nul
 
 echo.
-echo [2/2] Æô¶¯ÓÎÏ·¿Í»§¶Ë...
+echo [2/2] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï·ï¿½Í»ï¿½ï¿½ï¿½...
 if defined CLI_BAT (
     > "%temp%\dnf_cli.vbs" echo Set ws=CreateObject("WScript.Shell"^):ws.Run "cmd.exe /c cd /d ""!CLI_DIR!"" && ""!CLI_BAT!""",0,False
     cscript //nologo "%temp%\dnf_cli.vbs"
@@ -94,18 +94,18 @@ if defined CLI_BAT (
 
 echo.
 echo ========================================
-echo   ÓÎÏ·ÒÑÆô¶¯
+echo   ï¿½ï¿½Ï·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 echo ========================================
 echo.
 
-echo   dnf.exeÓÎÏ·ÍË³öºó£¬±¾´°¿Ú½«»á×Ô¶¯¹Ø±Õ·þÎñ¶Ë£¬µ«ÊÇ»áÓÐÑÓ³Ù£¬Çë¾²ºòbatÖ¸Áî·´Ó¦
+echo   dnf.exeï¿½ï¿½Ï·ï¿½Ë³ï¿½ï¿½ó£¬±ï¿½ï¿½ï¿½ï¿½Ú½ï¿½ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½Ø±Õ·ï¿½ï¿½ï¿½Ë£ï¿½ï¿½ï¿½ï¿½Ç»ï¿½ï¿½ï¿½ï¿½Ó³Ù£ï¿½ï¿½ë¾²ï¿½ï¿½batÖ¸ï¿½î·´Ó¦
 :wait_exit
 timeout /t 3 /nobreak >nul
 tasklist /fi "imagename eq DNF.exe" 2>nul | findstr /i "DNF.exe" >nul 2>&1
 if not errorlevel 1 goto wait_exit
 
 echo.
-echo ÓÎÏ·ÒÑÍË³ö£¬¹Ø±Õ·þÎñ¶Ë...
+echo ï¿½ï¿½Ï·ï¿½ï¿½ï¿½Ë³ï¿½ï¿½ï¿½ï¿½Ø±Õ·ï¿½ï¿½ï¿½ï¿?..
 for /f "tokens=2 delims== " %%a in ('wmic process where "name='cmd.exe' and commandline like '%%start-server.bat%%'" get processid /value 2^>nul') do (
     taskkill /F /T /PID %%a >nul 2>&1
 )
@@ -113,6 +113,6 @@ taskkill /f /im DfoServer.exe >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":7001 " 2^>nul') do (
     >nul 2>&1 taskkill /f /pid %%a
 )
-echo ·þÎñ¶ËÒÑ¹Ø±Õ
+echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¹Ø±ï¿?
 timeout /t 2 /nobreak >nul
 exit

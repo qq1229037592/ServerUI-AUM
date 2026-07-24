@@ -1,8 +1,7 @@
 ﻿# v1.917: AUM 管理器自更新脚本
 $ErrorActionPreference = "Continue"
 $ScriptRoot = $PSScriptRoot
-if ((Get-Item $ScriptRoot).Name -eq 'ps1核心' -or (Get-Item $ScriptRoot).Name -eq '旧版ps1') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
-if ((Get-Item $ScriptRoot).Name -eq '旧版ps1' -or (Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
+if ((Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
 
 Write-Host ""
 Write-Host "========================================"
@@ -180,13 +179,21 @@ Get-ChildItem $srcDir -File -Recurse | ForEach-Object {
 }
 Write-Host "  源码已同步"
 
-$exts = @("*.ps1", "*.bat", "*.txt", "*.md")
-foreach ($pattern in $exts) {
-    Get-ChildItem $rootDir -File -Filter $pattern | ForEach-Object {
-        $name = $_.Name
-        if ($name -match "GameLog|运行日志") { return }
-        Copy-Item $_.FullName (Join-Path $ScriptRoot $name) -Force
-    }
+$ps1CoreDir = Join-Path $ScriptRoot "ps1核心"
+New-Item -ItemType Directory -Path $ps1CoreDir -Force | Out-Null
+foreach ($f in Get-ChildItem $rootDir -File -Filter "*.ps1") {
+    $name = $f.Name
+    if ($name -match "GameLog|运行日志") { continue }
+    Copy-Item $f.FullName (Join-Path $ps1CoreDir $name) -Force
+}
+foreach ($f in Get-ChildItem $rootDir -File -Filter "*.bat") {
+    $name = $f.Name
+    Copy-Item $f.FullName (Join-Path $ScriptRoot $name) -Force
+}
+foreach ($f in Get-ChildItem $rootDir -File -Filter "*.txt", "*.md") {
+    $name = $f.Name
+    if ($name -match "GameLog|运行日志") { continue }
+    Copy-Item $f.FullName (Join-Path $ScriptRoot $name) -Force
 }
 
 Set-Content -Path $localVerFile -Value $remoteVer -Encoding UTF8

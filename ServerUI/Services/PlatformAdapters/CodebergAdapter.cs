@@ -118,6 +118,18 @@ public class CodebergAdapter : IMirrorPlatform
         catch { return false; }
     }
 
+    public async Task<bool> UploadChangelogAsync(byte[] data, string sha, string message)
+    {
+        try
+        {
+            var path = "mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt";
+            var b64 = Convert.ToBase64String(data);
+            var body = JsonSerializer.Serialize(new { content = b64, message, branch = "main" });
+            return await PutOrPostFileAsync(path, body);
+        }
+        catch { return false; }
+    }
+
     public async Task CleanupOldPackagesAsync(int keepCount = 5)
     {
         try

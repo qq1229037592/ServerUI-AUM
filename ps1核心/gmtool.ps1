@@ -13,7 +13,7 @@
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
 $Base      = $PSScriptRoot
-if ((Get-Item $Base).Name -eq 'ps1核心' -or (Get-Item $Base).Name -eq '旧版ps1') { $Base = (Get-Item $Base).Parent.FullName }
+if ((Get-Item $Base).Name -eq 'ps1核心') { $Base = (Get-Item $Base).Parent.FullName }
 $GmDir     = Join-Path $Base 'dfogmtool\publish'
 $GmExe     = Join-Path $GmDir 'DfoGmTool.exe'
 $ServerBin = Join-Path $Base 'ServerS4A12-AUM\dist\win-x64'

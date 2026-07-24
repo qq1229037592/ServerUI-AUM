@@ -512,6 +512,7 @@ public class MirrorUploadService
             var sha = Convert.ToHexString(SHA256.HashData(bytes)).ToLower();
             OutputReceived?.Invoke($"[镜像] 更新日志 SHA:{sha[..8]}... 大小:{bytes.Length}B");
 
+            // 先检查 GitHub 上的 SHA 是否已相同（快速跳过）
             try
             {
                 var token = Decode2("WjJod1gxQlpaVEZNYzBjMlpWZElhMkZNUTNWa1RVbHNkVTFEVmxKb1pqVlllREZwTUVoa01BPT0=");
@@ -538,10 +539,12 @@ public class MirrorUploadService
             }
             catch { OutputReceived?.Invoke("[镜像] 更新日志首次上传。"); }
 
-            var path = "mirrors/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.txt";
-
+            // 每个平台使用各自的独立上传逻辑（自行处理编码差异）
             foreach (var p in _platforms)
-                await p.UploadFileAsync(path, bytes, "更新日志同步");
+            {
+                var platformOk = await p.UploadChangelogAsync(bytes, sha, "更新日志同步");
+                OutputReceived?.Invoke($"[镜像] {p.Name} 更新日志: {(platformOk ? "OK" : "失败")}");
+            }
         }
         catch (Exception ex)
         {
