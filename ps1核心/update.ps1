@@ -50,8 +50,7 @@ $ErrorActionPreference = "Continue"
 # 例如脚本在 E:\Game\DXF\AUM管理组件\update.ps1
 # 则 $PSScriptRoot = E:\Game\DXF\AUM管理组件
 $ScriptRoot = $PSScriptRoot
-if ((Get-Item $ScriptRoot).Name -eq 'ps1核心' -or (Get-Item $ScriptRoot).Name -eq '旧版ps1') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
-if ((Get-Item $ScriptRoot).Name -eq '旧版ps1' -or (Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
+if ((Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
 
 # SrcRoot = 服务端源码主目录（脚本目录下的 ServerS4A12-AUM 文件夹）
 # 这是更新操作的目标目录，所有文件都会同步到这里

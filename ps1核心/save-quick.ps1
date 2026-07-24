@@ -1,8 +1,7 @@
 ﻿# v1.917: 快速换挡脚本 — 拖拽 .db 文件替换 inventory.db，自动停服/重启
 $ErrorActionPreference = "Continue"
 $ScriptRoot = $PSScriptRoot
-if ((Get-Item $ScriptRoot).Name -eq 'ps1核心' -or (Get-Item $ScriptRoot).Name -eq '旧版ps1') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
-if ((Get-Item $ScriptRoot).Name -eq '旧版ps1' -or (Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
+if ((Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
 $SrcFile = $args[0]
 $DbTarget = Join-Path $ScriptRoot "ServerS4A12-AUM\dist\win-x64\Data\inventory.db"
 $BackupDir = Join-Path $ScriptRoot "存档管理\备份存档"

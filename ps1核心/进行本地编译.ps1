@@ -4,8 +4,7 @@
 # ==================================================================
 $ErrorActionPreference = "Continue"
 $ScriptRoot = Split-Path -Parent (Get-Command $PSCommandPath | Select-Object -ExpandProperty Source)
-if ((Get-Item $ScriptRoot).Name -eq "ps1核心" -or (Get-Item $ScriptRoot).Name -eq "旧版ps1") { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
-if ((Get-Item $ScriptRoot).Name -eq '旧版ps1' -or (Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
+if ((Get-Item $ScriptRoot).Name -eq 'ps1核心') { $ScriptRoot = (Get-Item $ScriptRoot).Parent.FullName }
 $LatestDir = Join-Path $ScriptRoot "latest"
 $SvrZip = Join-Path $LatestDir "ServerS4A12-latest.zip"
 $GmZip = Join-Path $LatestDir "DfoGmTool-latest.zip"
